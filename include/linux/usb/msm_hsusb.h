@@ -600,16 +600,6 @@ struct msm_usb_host_platform_data {
 	int pm_qos_latency;
 };
 
-/**
- * struct msm_hsic_peripheral_platform_data: HSIC peripheral
- * platform data.
- * @core_clk_always_on_workaround: Don't disable core_clk when
- *                                 HSIC enters LPM.
- */
-struct msm_hsic_peripheral_platform_data {
-	bool core_clk_always_on_workaround;
-};
-
 #ifdef CONFIG_USB_BAM
 void msm_bam_set_usb_host_dev(struct device *dev);
 void msm_bam_set_hsic_host_dev(struct device *dev);
