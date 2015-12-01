@@ -212,6 +212,7 @@ struct dwc3_msm {
 	struct delayed_work	resume_work;
 	struct work_struct	restart_usb_work;
 	bool			in_restart;
+	struct workqueue_struct *dwc3_wq;
 	struct delayed_work	sm_work;
 	unsigned long		inputs;
 	struct completion	dwc3_xcvr_vbus_init;
@@ -1496,7 +1497,8 @@ static void dwc3_msm_notify_event(struct dwc3 *dwc, unsigned event)
 		dev_dbg(mdwc->dev, "DWC3_CONTROLLER_NOTIFY_OTG_EVENT received\n");
 		if (dwc->enable_bus_suspend) {
 			mdwc->suspend = dwc->b_suspend;
-			schedule_delayed_work(&mdwc->resume_work, 0);
+			queue_delayed_work(mdwc->dwc3_wq,
+					&mdwc->resume_work, 0);
 		}
 		break;
 	case DWC3_CONTROLLER_SET_CURRENT_DRAW_EVENT:
@@ -2313,9 +2315,10 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_USB_OTG:
 		/* Let OTG know about ID detection */
 		mdwc->id_state = val->intval ? DWC3_ID_GROUND : DWC3_ID_FLOAT;
+		dbg_event(0xFF, "id_state", mdwc->id_state);
 		if (dwc->is_drd)
-			schedule_delayed_work(&mdwc->resume_work, 12);
-
+			queue_delayed_work(mdwc->dwc3_wq,
+					&mdwc->resume_work, 0);
 		break;
 	/* PMIC notification for DP_DM state */
 	case POWER_SUPPLY_PROP_DP_DM:
@@ -2361,7 +2364,8 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 			 * charging CDP complaince test fails if delay > 120ms.
 			 */
 			dbg_event(0xFF, "Q RW (vbus)", val->intval);
-			schedule_delayed_work(&mdwc->resume_work, 12);
+			queue_delayed_work(mdwc->dwc3_wq,
+					&mdwc->resume_work, 12);
 		}
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
@@ -3829,7 +3833,7 @@ static int dwc3_msm_pm_suspend(struct device *dev)
 	dev_dbg(dev, "dwc3-msm PM suspend\n");
 	dbg_event(0xFF, "PM Sus", 0);
 
-	flush_delayed_work(&mdwc->resume_work);
+	flush_workqueue(mdwc->dwc3_wq);
 	if (!atomic_read(&dwc->in_lpm)) {
 		dev_err(mdwc->dev, "Abort PM suspend!! (USB is outside LPM)\n");
 		return -EBUSY;
@@ -3851,11 +3855,11 @@ static int dwc3_msm_pm_resume(struct device *dev)
 	dbg_event(0xFF, "PM Res", 0);
 
 	/* flush to avoid race in read/write of pm_suspended */
-	flush_delayed_work(&mdwc->resume_work);
+	flush_workqueue(mdwc->dwc3_wq);
 	atomic_set(&mdwc->pm_suspended, 0);
 
 	/* kick in otg state machine */
-	schedule_delayed_work(&mdwc->resume_work, 0);
+	queue_delayed_work(mdwc->dwc3_wq, &mdwc->resume_work, 0);
 
 	return 0;
 }
