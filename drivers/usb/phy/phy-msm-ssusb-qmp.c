@@ -317,6 +317,19 @@ static const struct qmp_reg_val qmp_settings_rev1_misc[] = {
 	{-1, -1} /* terminating entry */
 };
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+#define QSERDES_TX_TX_EMP_POST1_LVL 0x218
+#define QSERDES_TX_TX_DRV_LVL       0x22C
+
+static uint32_t qmp_phy_tune_tx_pre_emphasis = 0;
+module_param(qmp_phy_tune_tx_pre_emphasis, uint, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(qmp_phy_tune_tx_pre_emphasis, "Overide TX_PRE_EMPHASIS tuning register");
+
+static uint32_t qmp_phy_tune_tx_swing = 0;
+module_param(qmp_phy_tune_tx_swing, uint, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(qmp_phy_tune_tx_swing, "Override TX_SWING tuning register");
+#endif
+
 struct msm_ssphy_qmp {
 	struct usb_phy		phy;
 	void __iomem		*base;
@@ -478,6 +491,19 @@ static int configure_phy_regs(struct usb_phy *uphy,
 		writel_relaxed(reg->val, phy->base + reg->offset);
 		reg++;
 	}
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	if (qmp_phy_tune_tx_pre_emphasis) {
+		dev_dbg(uphy->dev, "%s(), Programming TX_PRE_EMPHASIS tuning register as: %d", __func__, qmp_phy_tune_tx_pre_emphasis);
+		writel_relaxed(qmp_phy_tune_tx_pre_emphasis | 0x20, phy->base + QSERDES_TX_TX_EMP_POST1_LVL);
+	}
+
+	if (qmp_phy_tune_tx_swing) {
+		dev_dbg(uphy->dev, "%s(), Programming TX_SWING tuning register as: %d", __func__, qmp_phy_tune_tx_swing);
+		writel_relaxed(qmp_phy_tune_tx_swing | 0x20, phy->base + QSERDES_TX_TX_DRV_LVL);
+	}
+#endif
+
 	return 0;
 }
 
@@ -503,6 +529,9 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 			clk_prepare_enable(phy->ref_clk);
 		clk_prepare_enable(phy->aux_clk);
 		clk_prepare_enable(phy->cfg_ahb_clk);
+		clk_set_rate(phy->pipe_clk, 125000000);
+		clk_prepare_enable(phy->pipe_clk);
+		phy->clk_enabled = true;
 	}
 
 	/* Rev ID is made up each of the LSBs of REVISION_ID[0-3] */
@@ -516,6 +545,10 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 			phy->phy_reg[USB3_REVISION_ID0]) & 0xFF;
 
 	pll = qmp_override_pll;
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	dev_dbg(uphy->dev, "revid: 0x%X", revid);
+#endif
 
 	switch (revid) {
 	case 0x10000000:
@@ -541,12 +574,6 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 
 	/* Make sure that above write completed to get PHY into POWER DOWN */
 	mb();
-
-	if (!phy->clk_enabled) {
-		clk_set_rate(phy->pipe_clk, 125000000);
-		clk_prepare_enable(phy->pipe_clk);
-		phy->clk_enabled = true;
-	}
 
 	/* Main configuration */
 	ret = configure_phy_regs(uphy, reg);
@@ -592,6 +619,13 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 					phy->phy_reg[USB3_PHY_PCS_STATUS]));
 		return -EBUSY;
 	};
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	dev_dbg(uphy->dev, "%s, TX_PRE_EMPHASIS tuning register: 0x%X, TX_SWING tuning register : 0x%X\n",
+			__func__,
+			(readl_relaxed(phy->base + QSERDES_TX_TX_EMP_POST1_LVL) & 0x1F),
+			(readl_relaxed(phy->base + QSERDES_TX_TX_DRV_LVL)) & 0x1F);
+#endif
 
 	return 0;
 }

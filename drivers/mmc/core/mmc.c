@@ -724,6 +724,12 @@ static int mmc_compare_ext_csds(struct mmc_card *card, unsigned bus_width)
 	err = mmc_get_ext_csd(card, &bw_ext_csd);
 
 	if (err || bw_ext_csd == NULL) {
+		#ifdef CONFIG_MACH_LGE
+		/* LGE_CHANGE, 2015-09-23, H1-BSP-FS@lge.com
+		* Adding Print, Requested by QMC-CASE-01158823
+		*/
+		pr_err("%s: %s: 0x%x, 0x%x\n", mmc_hostname(card->host), __func__, err, bw_ext_csd ? *bw_ext_csd : 0x0);
+		#endif
 		err = -EINVAL;
 		goto out;
 	}
@@ -782,8 +788,18 @@ static int mmc_compare_ext_csds(struct mmc_card *card, unsigned bus_width)
 		(card->ext_csd.raw_pwr_cl_ddr_200_360 ==
 			bw_ext_csd[EXT_CSD_PWR_CL_DDR_200_360]));
 
+	#ifdef CONFIG_MACH_LGE
+	/* LGE_CHANGE, 2015-09-23, H1-BSP-FS@lge.com
+	* Adding Print, Requested by QMC-CASE-01158823
+	*/
+	if (err) {
+		pr_err("%s: %s: fail during compare, err = 0x%x\n", mmc_hostname(card->host), __func__, err);
+		err = -EINVAL;
+	}
+	#else
 	if (err)
 		err = -EINVAL;
+	#endif
 
 out:
 	mmc_free_ext_csd(bw_ext_csd);
@@ -892,8 +908,15 @@ static int __mmc_select_powerclass(struct mmc_card *card,
 				ext_csd->raw_pwr_cl_200_360;
 		break;
 	default:
+		#ifdef CONFIG_MACH_LGE
+		/* LGE_CHANGE, 2015-09-23, H1-BSP-FS@lge.com
+		* Adding Print, Requested by QMC-CASE-01158823
+		*/
+		pr_err("%s: %s: Voltage range not supported for power class, host->ios.vdd = 0x%x\n", mmc_hostname(host), __func__, host->ios.vdd);
+		#else
 		pr_warn("%s: Voltage range not supported for power class\n",
 			mmc_hostname(host));
+        #endif
 		return -EINVAL;
 	}
 
@@ -1404,8 +1427,7 @@ static int mmc_select_cmdq(struct mmc_card *card)
 		mmc_card_clr_cmdq(card);
 		ret = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL, EXT_CSD_CMDQ, 0,
 				 card->ext_csd.generic_cmd6_time);
-		if (ret)
-			goto out;
+		goto out;
 	}
 
 	mmc_host_clk_release(card->host);
@@ -1698,12 +1720,17 @@ reinit:
 					mmc_hostname(host), __func__, err);
 			goto free_card;
 		}
+#if !defined(CONFIG_MACH_LGE)
+		/* LGE_CHANGE, 2015-09-23, H1-BSP-FS@lge.com
+		 *  ext_csd.rev value are required while decoding cid.year, so move down.
+		 */
 		err = mmc_decode_cid(card);
 		if (err) {
 			pr_err("%s: %s: mmc_decode_cid() fails %d\n",
 					mmc_hostname(host), __func__, err);
 			goto free_card;
 		}
+#endif
 	}
 
 	/*
@@ -1743,6 +1770,17 @@ reinit:
 					mmc_hostname(host), __func__, err);
 			goto free_card;
 		}
+#if defined(CONFIG_MACH_LGE)
+		/* LGE_CHANGE, 2015-09-23, H1-BSP-FS@lge.com
+		 * decode cid here.
+		 */
+		err = mmc_decode_cid(card);
+		if (err) {
+			pr_err("%s: %s: mmc_decode_cid() fails %d\n",
+					mmc_hostname(host), __func__, err);
+			goto free_card;
+		}
+#endif
 
 		/* If doing byte addressing, check if required to do sector
 		 * addressing.  Handle the case of <2GB cards needing sector
@@ -2063,8 +2101,38 @@ static int mmc_sleepawake(struct mmc_host *host, bool sleep)
 {
 	struct mmc_command cmd = {0};
 	struct mmc_card *card = host->card;
-	unsigned int timeout_ms = DIV_ROUND_UP(card->ext_csd.sa_timeout, 10000);
+	unsigned int timeout_ms;
 	int err;
+
+	if (!card) {
+		pr_err("%s: %s: invalid card\n", mmc_hostname(host), __func__);
+		return -EINVAL;
+	}
+
+	timeout_ms = DIV_ROUND_UP(card->ext_csd.sa_timeout, 10000);
+	if (card->ext_csd.rev >= 3 &&
+		card->part_curr == EXT_CSD_PART_CONFIG_ACC_RPMB) {
+		u8 part_config = card->ext_csd.part_config;
+
+		/*
+		 * If the last access before suspend is RPMB access, then
+		 * switch to default part config so that sleep command CMD5
+		 * and deselect CMD7 can be sent to the card.
+		 */
+		part_config &= ~EXT_CSD_PART_CONFIG_ACC_MASK;
+		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+				 EXT_CSD_PART_CONFIG,
+				 part_config,
+				 card->ext_csd.part_time);
+		if (err) {
+			pr_err("%s: %s: failed to switch to default part config %x\n",
+				mmc_hostname(host), __func__, part_config);
+			return err;
+		}
+		card->ext_csd.part_config = part_config;
+		card->part_curr = card->ext_csd.part_config &
+				  EXT_CSD_PART_CONFIG_ACC_MASK;
+	}
 
 	if (sleep) {
 		err = mmc_deselect_cards(host);
@@ -2299,7 +2367,7 @@ static int _mmc_suspend(struct mmc_host *host, bool is_suspend)
 	if (is_suspend)
 		host->dev_status = DEV_SUSPENDING;
 
-	if (mmc_card_cmdq(host->card)) {
+	if (host->card->cmdq_init) {
 		BUG_ON(host->cmdq_ctx.active_reqs);
 
 		err = mmc_cmdq_halt(host, true);
@@ -2345,6 +2413,11 @@ out:
 		host->dev_status = DEV_UNKNOWN;
 	else if (is_suspend)
 		host->dev_status = DEV_SUSPENDED;
+
+	/* Kick CMDQ thread to process any requests came in while suspending */
+	if (host->card->cmdq_init)
+		wake_up(&host->cmdq_ctx.wait);
+
 	mmc_release_host(host);
 	return err;
 }

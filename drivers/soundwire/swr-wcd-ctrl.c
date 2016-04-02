@@ -30,13 +30,13 @@
 #include "swr-wcd-ctrl.h"
 
 #define SWR_BROADCAST_CMD_ID            0x0F
-#define SWR_AUTO_SUSPEND_DELAY_MS	3000 /* delay in msec */
+#define SWR_AUTO_SUSPEND_DELAY          3 /* delay in sec */
 #define SWR_DEV_ID_MASK			0xFFFFFFFF
 #define SWR_REG_VAL_PACK(data, dev, id, reg)	\
 			((reg) | ((id) << 16) | ((dev) << 20) | ((data) << 24))
 
 /* pm runtime auto suspend timer in msecs */
-static int auto_suspend_timer = SWR_AUTO_SUSPEND_DELAY_MS;
+static int auto_suspend_timer = SWR_AUTO_SUSPEND_DELAY * 1000;
 module_param(auto_suspend_timer, int,
 		S_IRUGO | S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(auto_suspend_timer, "timer for auto suspend");
@@ -482,7 +482,6 @@ static int swrm_read(struct swr_master *master, u8 dev_num, u16 reg_addr,
 		return -EINVAL;
 	}
 
-	pm_runtime_get_sync(&swrm->pdev->dev);
 	if (dev_num)
 		ret = swrm_cmd_fifo_rd_cmd(swrm, &val, dev_num, 0, reg_addr,
 					   len);
@@ -491,7 +490,6 @@ static int swrm_read(struct swr_master *master, u8 dev_num, u16 reg_addr,
 
 	*reg_val = (u8)val;
 	pm_runtime_mark_last_busy(&swrm->pdev->dev);
-	pm_runtime_put_autosuspend(&swrm->pdev->dev);
 
 	return ret;
 }
@@ -508,14 +506,12 @@ static int swrm_write(struct swr_master *master, u8 dev_num, u16 reg_addr,
 		return -EINVAL;
 	}
 
-	pm_runtime_get_sync(&swrm->pdev->dev);
 	if (dev_num)
 		ret = swrm_cmd_fifo_wr_cmd(swrm, reg_val, dev_num, 0, reg_addr);
 	else
 		ret = swrm->write(swrm->handle, reg_addr, reg_val);
 
 	pm_runtime_mark_last_busy(&swrm->pdev->dev);
-	pm_runtime_put_autosuspend(&swrm->pdev->dev);
 
 	return ret;
 }
@@ -536,7 +532,6 @@ static int swrm_bulk_write(struct swr_master *master, u8 dev_num, void *reg,
 	if (len <= 0)
 		return -EINVAL;
 
-	pm_runtime_get_sync(&swrm->pdev->dev);
 	if (dev_num) {
 		swr_fifo_reg = kcalloc(len, sizeof(u32), GFP_KERNEL);
 		if (!swr_fifo_reg) {
@@ -574,7 +569,6 @@ mem_fail:
 	kfree(swr_fifo_reg);
 err:
 	pm_runtime_mark_last_busy(&swrm->pdev->dev);
-	pm_runtime_put_autosuspend(&swrm->pdev->dev);
 	return ret;
 }
 
@@ -837,7 +831,22 @@ static int swrm_disconnect_port(struct swr_master *master,
 	}
 	return 0;
 }
+#ifdef CONFIG_MACH_LGE
+static int swrm_wakeup_soundwire_master(struct swr_master *master)
+{
+	struct swr_mstr_ctrl *swrm = swr_get_ctrl_data(master);
 
+	if(!swrm) {
+		dev_err(&master->dev, "%s: swrm is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	pm_runtime_get_sync(&swrm->pdev->dev);
+	pm_runtime_mark_last_busy(&swrm->pdev->dev);
+	pm_runtime_put_autosuspend(&swrm->pdev->dev);
+	return 0;
+}
+#endif
 static int swrm_check_slave_change_status(struct swr_mstr_ctrl *swrm,
 					int status, u8 *devnum)
 {
@@ -1130,6 +1139,9 @@ static int swrm_probe(struct platform_device *pdev)
 	swrm->master.get_logical_dev_num = swrm_get_logical_dev_num;
 	swrm->master.connect_port = swrm_connect_port;
 	swrm->master.disconnect_port = swrm_disconnect_port;
+#ifdef CONFIG_MACH_LGE
+	swrm->master.wakeup_soundwire_master = swrm_wakeup_soundwire_master;
+#endif
 	swrm->master.dev.parent = &pdev->dev;
 	swrm->master.dev.of_node = pdev->dev.of_node;
 	swrm->master.num_port = 0;
@@ -1203,10 +1215,9 @@ static int swrm_probe(struct platform_device *pdev)
 	}
 	pm_runtime_set_autosuspend_delay(&pdev->dev, auto_suspend_timer);
 	pm_runtime_use_autosuspend(&pdev->dev);
-	pm_runtime_set_suspended(&pdev->dev);
+	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
-	if (!pm_runtime_enabled(&pdev->dev))
-		dev_err(&pdev->dev, "%s: pm runtime not enabled\n", __func__);
+	pm_runtime_mark_last_busy(&pdev->dev);
 
 	return 0;
 err_mstr_fail:
@@ -1346,7 +1357,9 @@ static int swrm_device_down(struct device *dev)
 					__func__, swr_dev->dev_num);
 		}
 		dev_dbg(dev, "%s: Shutting down SWRM\n", __func__);
+		pm_runtime_disable(dev);
 		pm_runtime_set_suspended(dev);
+		pm_runtime_enable(dev);
 		swrm_clk_request(swrm, false);
 	}
 	mutex_unlock(&swrm->reslock);
@@ -1401,22 +1414,28 @@ int swrm_wcd_notify(struct platform_device *pdev, u32 id, void *data)
 	case SWR_DEVICE_UP:
 		dev_dbg(swrm->dev, "%s: swr master up called\n", __func__);
 		mutex_lock(&swrm->mlock);
+		mutex_lock(&swrm->reslock);
 		if ((swrm->state == SWR_MSTR_RESUME) ||
 		    (swrm->state == SWR_MSTR_UP)) {
 			dev_dbg(swrm->dev, "%s: SWR master is already UP: %d\n",
 				__func__, swrm->state);
 		} else {
-			swrm_runtime_resume(&pdev->dev);
+			mutex_unlock(&swrm->reslock);
+			pm_runtime_get_sync(&pdev->dev);
+			mutex_lock(&swrm->reslock);
 			list_for_each_entry(swr_dev, &mstr->devices, dev_list) {
 				ret = swr_reset_device(swr_dev);
 				if (ret) {
 					dev_err(swrm->dev,
-						"%s: failed to wakeup swr device %d\n",
+						"%s: failed to reset swr device %d\n",
 						__func__, swr_dev->dev_num);
 					swrm_clk_request(swrm, false);
 				}
 			}
+			pm_runtime_mark_last_busy(&pdev->dev);
+			pm_runtime_put_autosuspend(&pdev->dev);
 		}
+		mutex_unlock(&swrm->reslock);
 		mutex_unlock(&swrm->mlock);
 		break;
 	default:
@@ -1452,11 +1471,6 @@ static int swrm_suspend(struct device *dev)
 			pm_runtime_disable(dev);
 			pm_runtime_set_suspended(dev);
 			pm_runtime_enable(dev);
-		} else {
-			if (swrm->clk && swrm->handle) {
-				swrm->clk(swrm->handle, false);
-				swrm->state = SWR_MSTR_DOWN;
-			}
 		}
 	}
 	if (ret == -EBUSY) {
@@ -1481,11 +1495,6 @@ static int swrm_resume(struct device *dev)
 
 	dev_dbg(dev, "%s: system resume, state: %d\n", __func__, swrm->state);
 	if (!pm_runtime_enabled(dev) || !pm_runtime_suspend(dev)) {
-		if (swrm->clk && swrm->handle &&
-		    swrm->state == SWR_MSTR_DOWN) {
-			swrm->clk(swrm->handle, true);
-			swrm->state = SWR_MSTR_UP;
-		}
 		ret = swrm_runtime_resume(dev);
 		if (!ret) {
 			pm_runtime_mark_last_busy(dev);

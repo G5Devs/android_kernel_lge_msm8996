@@ -1063,6 +1063,7 @@ static int armv8pmu_request_irq(struct arm_pmu *cpu_pmu, irq_handler_t handler)
 			return err;
 		}
 
+		cpu_pmu->percpu_irq = irq;
 		on_each_cpu(armpmu_enable_percpu_irq, &irq, 1);
 	} else {
 		for (i = 0; i < irqs; ++i) {
@@ -1224,12 +1225,10 @@ static int armv8pmu_get_event_idx(struct pmu_hw_events *cpuc,
 	int idx;
 	unsigned long evtype = event->config_base & ARMV8_EVTYPE_EVENT;
 
-	/* Always place a cycle counter into the cycle counter. */
+	/* Place the first cycle counter request into the cycle counter. */
 	if (evtype == ARMV8_PMUV3_PERFCTR_CLOCK_CYCLES) {
-		if (test_and_set_bit(ARMV8_IDX_CYCLE_COUNTER, cpuc->used_mask))
-			return -EAGAIN;
-
-		return ARMV8_IDX_CYCLE_COUNTER;
+		if (!test_and_set_bit(ARMV8_IDX_CYCLE_COUNTER, cpuc->used_mask))
+			return ARMV8_IDX_CYCLE_COUNTER;
 	}
 
 	/*
@@ -1253,8 +1252,6 @@ static int armv8pmu_set_event_filter(struct hw_perf_event *event,
 {
 	unsigned long config_base = 0;
 
-	if (attr->exclude_idle)
-		return -EPERM;
 	if (attr->exclude_user)
 		config_base |= ARMV8_EXCLUDE_EL0;
 	if (attr->exclude_kernel)
@@ -1416,6 +1413,26 @@ static void armpmu_update_counters(void *x)
 	}
 }
 
+static void armpmu_idle_update(void)
+{
+	struct pmu_hw_events *hw_events;
+	int idx;
+
+	if (!cpu_pmu)
+		return;
+
+	hw_events = cpu_pmu->get_hw_events();
+
+	for (idx = 0; idx <= cpu_pmu->num_events; ++idx) {
+		struct perf_event *event = hw_events->events[idx];
+
+		if (!event || !event->attr.exclude_idle)
+			continue;
+
+		cpu_pmu->pmu.read(event);
+	}
+}
+
 static void armpmu_hotplug_enable(void *parm_pmu)
 {
 	struct arm_pmu *armpmu = parm_pmu;
@@ -1495,8 +1512,8 @@ static int __cpuinit cpu_pmu_notify(struct notifier_block *b,
 				smp_call_function_single(cpu,
 					armpmu_hotplug_disable, cpu_pmu, 1);
 			/* Disarm the PMU IRQ before disappearing. */
-			if (cpu_pmu->plat_device) {
-				irq = platform_get_irq(cpu_pmu->plat_device, 0);
+			if (cpu_pmu->percpu_irq) {
+				irq = cpu_pmu->percpu_irq;
 				smp_call_function_single(cpu,
 					    armpmu_disable_percpu_irq, &irq, 1);
 			}
@@ -1512,8 +1529,8 @@ static int __cpuinit cpu_pmu_notify(struct notifier_block *b,
 			cpu_pmu->restore_pm_registers(hcpu);
 		if (cpu_pmu->pmu_state == ARM_PMU_STATE_RUNNING) {
 			/* Arm the PMU IRQ before appearing. */
-			if (cpu_pmu->plat_device) {
-				irq = platform_get_irq(cpu_pmu->plat_device, 0);
+			if (cpu_pmu->percpu_irq) {
+				irq = cpu_pmu->percpu_irq;
 				armpmu_enable_percpu_irq(&irq);
 			}
 			if (cpu_has_active_perf(cpu)) {
@@ -1581,6 +1598,19 @@ static struct notifier_block perf_cpu_pm_notifier_block = {
 	.notifier_call = perf_cpu_pm_notifier,
 };
 
+static int perf_cpu_idle_notifier(struct notifier_block *nb,
+				unsigned long action, void *data)
+{
+	if (action == IDLE_START)
+		armpmu_idle_update();
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block perf_cpu_idle_nb = {
+	.notifier_call = perf_cpu_idle_notifier,
+};
+
 /*
  * PMU platform driver and devicetree bindings.
  */
@@ -1633,6 +1663,8 @@ static int __init register_pmu_driver(void)
 	if (err)
 		goto err_cpu_pm;
 
+	idle_notifier_register(&perf_cpu_idle_nb);
+
 	err = platform_driver_register(&armpmu_driver);
 	if (err)
 		goto err_driver;
@@ -1640,6 +1672,7 @@ static int __init register_pmu_driver(void)
 
 err_driver:
 	cpu_pm_unregister_notifier(&perf_cpu_pm_notifier_block);
+	idle_notifier_unregister(&perf_cpu_idle_nb);
 err_cpu_pm:
 	unregister_cpu_notifier(&cpu_pmu_hotplug_notifier);
 	return err;

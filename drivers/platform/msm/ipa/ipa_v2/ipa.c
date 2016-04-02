@@ -291,6 +291,12 @@ void ipa_flow_control(enum ipa_client_type ipa_client,
 	int ep_idx;
 	struct ipa_ep_context *ep;
 
+	/* Check if tethered flow control is needed or not.*/
+	if (!ipa_ctx->tethered_flow_control) {
+		IPADBG("Apps flow control is not needed\n");
+		return;
+	}
+
 	/* Check if ep is valid. */
 	ep_idx = ipa2_get_ep_mapping(ipa_client);
 	if (ep_idx == -1) {
@@ -1446,7 +1452,7 @@ static int ipa_q6_clean_q6_tables(void)
 	mem.base = dma_alloc_coherent(ipa_ctx->pdev, 4, &mem.phys_base,
 		GFP_KERNEL);
 	if (!mem.base) {
-		IPAERR("failed to alloc DMA buff of size %d\n", mem.size);
+		IPAERR("failed to alloc DMA buff of size 4\n");
 		return -ENOMEM;
 	}
 
@@ -1721,14 +1727,10 @@ int ipa_q6_pipe_reset(void)
 {
 	int client_idx;
 	int res;
-	/*
-	 * Q6 relies on the AP to reset all Q6 IPA pipes.
-	 * In case the uC is not loaded, or upon any failure in the
-	 * pipe reset sequence, we have to assert.
-	 */
+
 	if (!ipa_ctx->uc_ctx.uc_loaded) {
-		IPAERR("uC is not loaded, can't reset Q6 pipes\n");
-		BUG();
+		IPAERR("uC is not loaded, won't reset Q6 pipes\n");
+		return 0;
 	}
 
 	for (client_idx = 0; client_idx < IPA_CLIENT_MAX; client_idx++)
@@ -2542,6 +2544,8 @@ void _ipa_enable_clks_v2_0(void)
 
 	if (smmu_clk)
 		clk_prepare_enable(smmu_clk);
+	/* Enable the BAM IRQ. */
+	ipa_sps_irq_control_all(true);
 	ipa_suspend_apps_pipes(false);
 }
 
@@ -2665,6 +2669,7 @@ void _ipa_disable_clks_v2_0(void)
 {
 	IPADBG("disabling gcc_ipa_clk\n");
 	ipa_suspend_apps_pipes(true);
+	ipa_sps_irq_control_all(false);
 	ipa_uc_notify_clk_state(false);
 	if (ipa_clk)
 		clk_disable_unprepare(ipa_clk);
@@ -3017,9 +3022,17 @@ void ipa_suspend_handler(enum ipa_irq_type interrupt,
 				 * pipe will be unsuspended as part of
 				 * enabling IPA clocks
 				 */
-				ipa_inc_client_enable_clks();
-				ipa_ctx->sps_pm.dec_clients = true;
-				ipa_sps_process_irq_schedule_rel();
+				if (!atomic_read(
+					&ipa_ctx->sps_pm.dec_clients)
+					) {
+					ipa_inc_client_enable_clks();
+					IPADBG("Pipes un-suspended.\n");
+					IPADBG("Enter poll mode.\n");
+					atomic_set(
+						&ipa_ctx->sps_pm.dec_clients,
+						1);
+					ipa_sps_process_irq_schedule_rel();
+				}
 			} else {
 				resource = ipa2_get_rm_resource_from_ep(i);
 				res = ipa_rm_request_resource_with_timer(
@@ -3042,6 +3055,33 @@ void ipa_suspend_handler(enum ipa_irq_type interrupt,
 	}
 }
 
+/**
+* ipa2_restore_suspend_handler() - restores the original suspend IRQ handler
+* as it was registered in the IPA init sequence.
+* Return codes:
+* 0: success
+* -EPERM: failed to remove current handler or failed to add original handler
+* */
+int ipa2_restore_suspend_handler(void)
+{
+	int result = 0;
+
+	result  = ipa2_remove_interrupt_handler(IPA_TX_SUSPEND_IRQ);
+	if (result) {
+		IPAERR("remove handler for suspend interrupt failed\n");
+		return -EPERM;
+	}
+
+	result = ipa2_add_interrupt_handler(IPA_TX_SUSPEND_IRQ,
+			ipa_suspend_handler, true, NULL);
+	if (result) {
+		IPAERR("register handler for suspend interrupt failed\n");
+		result = -EPERM;
+	}
+
+	return result;
+}
+
 static int apps_cons_release_resource(void)
 {
 	return 0;
@@ -3055,11 +3095,12 @@ static int apps_cons_request_resource(void)
 static void ipa_sps_release_resource(struct work_struct *work)
 {
 	/* check whether still need to decrease client usage */
-	if (ipa_ctx->sps_pm.dec_clients) {
+	if (atomic_read(&ipa_ctx->sps_pm.dec_clients)) {
 		if (atomic_read(&ipa_ctx->sps_pm.eot_activity)) {
+			IPADBG("EOT pending Re-scheduling\n");
 			ipa_sps_process_irq_schedule_rel();
 		} else {
-			ipa_ctx->sps_pm.dec_clients = false;
+			atomic_set(&ipa_ctx->sps_pm.dec_clients, 0);
 			ipa_dec_client_disable_clks();
 		}
 	}
@@ -3159,6 +3200,7 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 	ipa_ctx->wan_rx_ring_size = resource_p->wan_rx_ring_size;
 	ipa_ctx->skip_uc_pipe_reset = resource_p->skip_uc_pipe_reset;
 	ipa_ctx->use_dma_zone = resource_p->use_dma_zone;
+	ipa_ctx->tethered_flow_control = resource_p->tethered_flow_control;
 
 	/* default aggregation parameters */
 	ipa_ctx->aggregation_type = IPA_MBIM_16;
@@ -3538,8 +3580,8 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 	}
 
 	/*add handler for suspend interrupt*/
-	result = ipa2_add_interrupt_handler(IPA_TX_SUSPEND_IRQ,
-			ipa_suspend_handler, true, NULL);
+	result = ipa_add_interrupt_handler(IPA_TX_SUSPEND_IRQ,
+			ipa_suspend_handler, false, NULL);
 	if (result) {
 		IPAERR("register handler for suspend interrupt failed\n");
 		result = -ENODEV;
@@ -3726,6 +3768,13 @@ static int get_ipa_dts_configuration(struct platform_device *pdev,
 		"qcom,use-dma-zone");
 	IPADBG(": use dma zone = %s\n",
 		ipa_drv_res->use_dma_zone
+		? "True" : "False");
+
+	ipa_drv_res->tethered_flow_control =
+		of_property_read_bool(pdev->dev.of_node,
+		"qcom,tethered-flow-control");
+	IPADBG(": Use apps based flow control = %s\n",
+		ipa_drv_res->tethered_flow_control
 		? "True" : "False");
 
 	/* Get IPA wrapper address */

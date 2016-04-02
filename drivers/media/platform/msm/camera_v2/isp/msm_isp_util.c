@@ -309,7 +309,7 @@ int msm_isp_get_clk_info(struct vfe_device *vfe_dev,
 void msm_isp_get_timestamp(struct msm_isp_timestamp *time_stamp)
 {
 	struct timespec ts;
-	get_monotonic_boottime(&ts);
+	ktime_get_ts(&ts);   //LGE_CHANGE, QCT patch(0228081) for AV sync issue on video recording, sunjae.jung@lge.com, 2015-12-23
 	time_stamp->buf_time.tv_sec    = ts.tv_sec;
 	time_stamp->buf_time.tv_usec   = ts.tv_nsec/1000;
 	do_gettimeofday(&(time_stamp->event_time));
@@ -349,6 +349,15 @@ static inline u32 msm_isp_evt_mask_to_isp_event(u32 evt_mask)
 		break;
 	case ISP_EVENT_MASK_INDEX_MASK_FE_READ_DONE:
 		evt_id = ISP_EVENT_FE_READ_DONE;
+		break;
+	case ISP_EVENT_MASK_INDEX_PING_PONG_MISMATCH:
+		evt_id = ISP_EVENT_PING_PONG_MISMATCH;
+		break;
+	case ISP_EVENT_MASK_INDEX_REG_UPDATE_MISSING:
+		evt_id = ISP_EVENT_REG_UPDATE_MISSING;
+		break;
+	case ISP_EVENT_MASK_INDEX_BUF_FATAL_ERROR:
+		evt_id = ISP_EVENT_BUF_FATAL_ERROR;
 		break;
 	default:
 		evt_id = ISP_EVENT_SUBS_MASK_NONE;
@@ -424,7 +433,7 @@ static inline int msm_isp_process_event_subscription(struct v4l2_fh *fh,
 	}
 
 	for (evt_mask_index = ISP_EVENT_MASK_INDEX_STATS_NOTIFY;
-		evt_mask_index <= ISP_EVENT_MASK_INDEX_MASK_FE_READ_DONE;
+		evt_mask_index <= ISP_EVENT_MASK_INDEX_BUF_FATAL_ERROR;
 		evt_mask_index++) {
 		if (evt_mask & (1<<evt_mask_index)) {
 			evt_id = msm_isp_evt_mask_to_isp_event(evt_mask_index);
@@ -494,7 +503,7 @@ static int msm_isp_get_clk_rates(struct vfe_device *vfe_dev,
 {
 	struct device_node *of_node;
 	int32_t  rc = 0;
-	uint32_t nominal = 0, turbo = 0;
+	uint32_t svs = 0, nominal = 0, turbo = 0;
 	if (!vfe_dev || !rates) {
 		pr_err("%s:%d failed: vfe_dev %p rates %p\n", __func__,
 			__LINE__, vfe_dev, rates);
@@ -514,6 +523,16 @@ static int msm_isp_get_clk_rates(struct vfe_device *vfe_dev,
 		 __LINE__, of_node);
 		return -EINVAL;
 	}
+
+	/*
+	 * Many older targets dont define svs.
+	 * return svs=0 for older targets.
+	 */
+	rc = of_property_read_u32(of_node, "max-clk-svs",
+		&svs);
+	if (rc < 0)
+		svs = 0;
+
 	rc = of_property_read_u32(of_node, "max-clk-nominal",
 		&nominal);
 	if (rc < 0 || !nominal) {
@@ -527,6 +546,7 @@ static int msm_isp_get_clk_rates(struct vfe_device *vfe_dev,
 		pr_err("%s: turbo rate error\n", __func__);
 			return -EINVAL;
 	}
+	rates->svs_rate = svs;
 	rates->nominal_rate = nominal;
 	rates->high_rate = turbo;
 	return 0;
@@ -553,6 +573,21 @@ static int msm_isp_set_clk_rate(struct vfe_device *vfe_dev, long *rate)
 	return 0;
 }
 
+
+static int msm_isp_start_fetch_engine(struct vfe_device *vfe_dev,
+	void *arg)
+{
+	struct msm_vfe_fetch_eng_start *fe_cfg = arg;
+	/*
+	 * For Offline VFE, HAL expects same frame id
+	 * for offline output which it requested in do_reprocess.
+	 */
+	vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id =
+		fe_cfg->frame_id;
+	return vfe_dev->hw_info->vfe_ops.core_ops.
+		start_fetch_eng(vfe_dev, arg);
+}
+
 void msm_isp_fetch_engine_done_notify(struct vfe_device *vfe_dev,
 	struct msm_vfe_fetch_engine_info *fetch_engine_info)
 {
@@ -560,17 +595,18 @@ void msm_isp_fetch_engine_done_notify(struct vfe_device *vfe_dev,
 	if (!fetch_engine_info->is_busy)
 		return;
 
-	vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id++;
-	if (vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id == 0)
-		vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id = 1;
-
 	memset(&fe_rd_done_event, 0, sizeof(struct msm_isp_event_data));
 	fe_rd_done_event.frame_id =
 		vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id;
-	fe_rd_done_event.u.buf_done.session_id = fetch_engine_info->session_id;
-	fe_rd_done_event.u.buf_done.stream_id = fetch_engine_info->stream_id;
-	fe_rd_done_event.u.buf_done.handle = fetch_engine_info->bufq_handle;
-	fe_rd_done_event.u.buf_done.buf_idx = fetch_engine_info->buf_idx;
+	fe_rd_done_event.u.fetch_done.session_id =
+		fetch_engine_info->session_id;
+	fe_rd_done_event.u.fetch_done.stream_id = fetch_engine_info->stream_id;
+	fe_rd_done_event.u.fetch_done.handle = fetch_engine_info->bufq_handle;
+	fe_rd_done_event.u.fetch_done.buf_idx = fetch_engine_info->buf_idx;
+	fe_rd_done_event.u.fetch_done.fd = fetch_engine_info->fd;
+	fe_rd_done_event.u.fetch_done.offline_mode =
+		fetch_engine_info->offline_mode;
+
 	ISP_DBG("%s:VFE%d ISP_EVENT_FE_READ_DONE buf_idx %d\n",
 		__func__, vfe_dev->pdev->id, fetch_engine_info->buf_idx);
 	fetch_engine_info->is_busy = 0;
@@ -691,6 +727,7 @@ static int msm_isp_set_dual_HW_master_slave_mode(
 	int rc = 0, i, j;
 	struct msm_isp_set_dual_hw_ms_cmd *dual_hw_ms_cmd = NULL;
 	struct msm_vfe_src_info *src_info = NULL;
+	unsigned long flags;
 
 	if (!vfe_dev || !arg) {
 		pr_err("%s: Error! Invalid input vfe_dev %p arg %p\n",
@@ -719,7 +756,7 @@ static int msm_isp_set_dual_HW_master_slave_mode(
 		vfe_dev->common_data->ms_resource.sof_delta_threshold =
 			dual_hw_ms_cmd->sof_delta_threshold;
 	} else if (src_info != NULL) {
-		spin_lock(&vfe_dev->common_data->common_dev_data_lock);
+		spin_lock_irqsave(&vfe_dev->common_data->common_dev_data_lock, flags);
 		src_info->dual_hw_type = DUAL_HW_MASTER_SLAVE;
 		ISP_DBG("%s: Slave\n", __func__);
 
@@ -738,7 +775,7 @@ static int msm_isp_set_dual_HW_master_slave_mode(
 			ISP_DBG("%s: Slave id %d\n", __func__, j);
 			break;
 		}
-		spin_unlock(&vfe_dev->common_data->common_dev_data_lock);
+		spin_unlock_irqrestore(&vfe_dev->common_data->common_dev_data_lock, flags);
 
 		if (j == MS_NUM_SLAVE_MAX) {
 			pr_err("%s: Error! Cannot find free aux resource\n",
@@ -933,8 +970,9 @@ static long msm_isp_ioctl_unlocked(struct v4l2_subdev *sd,
 		/* fallthrough */
 	case VIDIOC_MSM_ISP_ENQUEUE_BUF:
 		/* fallthrough */
-	case VIDIOC_MSM_ISP_DEQUEUE_BUF: {
+	case VIDIOC_MSM_ISP_DEQUEUE_BUF:
 		/* fallthrough */
+	case VIDIOC_MSM_ISP_UNMAP_BUF: {
 		mutex_lock(&vfe_dev->buf_mgr->lock);
 		rc = msm_isp_proc_buf_cmd(vfe_dev->buf_mgr, cmd, arg);
 		mutex_unlock(&vfe_dev->buf_mgr->lock);
@@ -1006,9 +1044,9 @@ static long msm_isp_ioctl_unlocked(struct v4l2_subdev *sd,
 		mutex_unlock(&vfe_dev->core_mutex);
 		break;
 	case VIDIOC_MSM_ISP_FETCH_ENG_START:
+	case VIDIOC_MSM_ISP_MAP_BUF_START_FE:
 		mutex_lock(&vfe_dev->core_mutex);
-		rc = vfe_dev->hw_info->vfe_ops.core_ops.
-			start_fetch_eng(vfe_dev, arg);
+		rc = msm_isp_start_fetch_engine(vfe_dev, arg);
 		mutex_unlock(&vfe_dev->core_mutex);
 		break;
 	case VIDIOC_MSM_ISP_REG_UPDATE_CMD:
@@ -1424,6 +1462,7 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 			pr_err("%s:%d failed: rc %d\n", __func__, __LINE__, rc);
 			return -EINVAL;
 		}
+		user_data->svs_rate = rates.svs_rate;
 		user_data->nominal_rate = rates.nominal_rate;
 		user_data->high_rate = rates.high_rate;
 		break;
@@ -1772,12 +1811,14 @@ void msm_isp_update_error_frame_count(struct vfe_device *vfe_dev)
 }
 
 
-void ms_isp_process_iommu_page_fault(struct vfe_device *vfe_dev)
+static int msm_isp_process_iommu_page_fault(struct vfe_device *vfe_dev)
 {
+	int rc = vfe_dev->buf_mgr->pagefault_debug_disable;
+
 	pr_err("%s:%d] VFE%d Handle Page fault! vfe_dev %p\n", __func__,
 		__LINE__,  vfe_dev->pdev->id, vfe_dev);
 
-	msm_isp_halt_send_error(vfe_dev);
+	msm_isp_halt_send_error(vfe_dev, ISP_EVENT_IOMMU_P_FAULT);
 
 	if (vfe_dev->buf_mgr->pagefault_debug_disable == 0) {
 		vfe_dev->buf_mgr->pagefault_debug_disable = 1;
@@ -1788,6 +1829,7 @@ void ms_isp_process_iommu_page_fault(struct vfe_device *vfe_dev)
 		vfe_dev->hw_info->vfe_ops.axi_ops.
 			read_wm_ping_pong_addr(vfe_dev);
 	}
+	return rc;
 }
 
 void msm_isp_process_error_info(struct vfe_device *vfe_dev)
@@ -1877,25 +1919,18 @@ static void msm_isp_process_overflow_irq(
 void msm_isp_reset_burst_count_and_frame_drop(
 	struct vfe_device *vfe_dev, struct msm_vfe_axi_stream *stream_info)
 {
-	uint32_t framedrop_period = 0;
 	if (stream_info->state != ACTIVE ||
 		stream_info->stream_type != BURST_STREAM) {
 		return;
 	}
 	if (stream_info->stream_type == BURST_STREAM &&
 		stream_info->num_burst_capture != 0) {
-		framedrop_period = msm_isp_get_framedrop_period(
-		   stream_info->frame_skip_pattern);
-		stream_info->burst_frame_count =
-			stream_info->init_frame_drop +
-			(stream_info->num_burst_capture - 1) *
-			framedrop_period + 1;
 		msm_isp_reset_framedrop(vfe_dev, stream_info);
 	}
 }
 
 static void msm_isp_enqueue_tasklet_cmd(struct vfe_device *vfe_dev,
-	uint32_t irq_status0, uint32_t irq_status1, uint32_t iommu_page_fault)
+	uint32_t irq_status0, uint32_t irq_status1)
 {
 	unsigned long flags;
 	struct msm_vfe_tasklet_queue_cmd *queue_cmd = NULL;
@@ -1911,7 +1946,6 @@ static void msm_isp_enqueue_tasklet_cmd(struct vfe_device *vfe_dev,
 	}
 	queue_cmd->vfeInterruptStatus0 = irq_status0;
 	queue_cmd->vfeInterruptStatus1 = irq_status1;
-	queue_cmd->iommu_page_fault = iommu_page_fault;
 	msm_isp_get_timestamp(&queue_cmd->ts);
 	queue_cmd->cmd_used = 1;
 	vfe_dev->taskletq_idx = (vfe_dev->taskletq_idx + 1) %
@@ -1956,7 +1990,7 @@ irqreturn_t msm_isp_process_irq(int irq_num, void *data)
 		return IRQ_HANDLED;
 	}
 
-	msm_isp_enqueue_tasklet_cmd(vfe_dev, irq_status0, irq_status1, 0);
+	msm_isp_enqueue_tasklet_cmd(vfe_dev, irq_status0, irq_status1);
 
 	return IRQ_HANDLED;
 }
@@ -1968,7 +2002,7 @@ void msm_isp_do_tasklet(unsigned long data)
 	struct msm_vfe_irq_ops *irq_ops = &vfe_dev->hw_info->vfe_ops.irq_ops;
 	struct msm_vfe_tasklet_queue_cmd *queue_cmd;
 	struct msm_isp_timestamp ts;
-	uint32_t irq_status0, irq_status1, iommu_page_fault;
+	uint32_t irq_status0, irq_status1;
 
 	if (vfe_dev->vfe_base == NULL || vfe_dev->vfe_open_cnt == 0) {
 		ISP_DBG("%s: VFE%d open cnt = %d, device closed(base = %p)\n",
@@ -1992,15 +2026,9 @@ void msm_isp_do_tasklet(unsigned long data)
 		irq_status0 = queue_cmd->vfeInterruptStatus0;
 		irq_status1 = queue_cmd->vfeInterruptStatus1;
 		ts = queue_cmd->ts;
-		iommu_page_fault = queue_cmd->iommu_page_fault;
-		queue_cmd->iommu_page_fault = 0;
 		spin_unlock_irqrestore(&vfe_dev->tasklet_lock, flags);
 		ISP_DBG("%s: vfe_id %d status0: 0x%x status1: 0x%x\n",
 			__func__, vfe_dev->pdev->id, irq_status0, irq_status1);
-		if (iommu_page_fault > 0) {
-			ms_isp_process_iommu_page_fault(vfe_dev);
-			continue;
-		}
 		irq_ops->process_reset_irq(vfe_dev,
 			irq_status0, irq_status1);
 		irq_ops->process_halt_irq(vfe_dev,
@@ -2041,7 +2069,7 @@ static int msm_vfe_iommu_fault_handler(struct iommu_domain *domain,
 	struct device *dev, unsigned long iova, int flags, void *token)
 {
 	struct vfe_device *vfe_dev = NULL;
-	int rc = -ENOSYS;
+	int rc = 1;
 
 	if (token) {
 		vfe_dev = (struct vfe_device *)token;
@@ -2058,7 +2086,7 @@ static int msm_vfe_iommu_fault_handler(struct iommu_domain *domain,
 		if (vfe_dev->vfe_open_cnt > 0) {
 			atomic_set(&vfe_dev->error_info.overflow_state,
 				HALT_ENFORCED);
-			msm_isp_enqueue_tasklet_cmd(vfe_dev, 0, 0, 1);
+			rc = msm_isp_process_iommu_page_fault(vfe_dev);
 		} else {
 			pr_err("%s: no handling, vfe open cnt = %d\n",
 				__func__, vfe_dev->vfe_open_cnt);
@@ -2070,7 +2098,11 @@ static int msm_vfe_iommu_fault_handler(struct iommu_domain *domain,
 		goto end;
 	}
 end:
-	return rc;
+	/*
+	 * On the first fault rerurn ENOSYS so the smmu driver will
+	 * print its debug stuff
+	 */
+	return rc ? 0 : -ENOSYS;
 }
 
 int msm_isp_open_node(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
@@ -2243,17 +2275,25 @@ void msm_isp_flush_tasklet(struct vfe_device *vfe_dev)
 	return;
 }
 
-void msm_isp_save_framedrop_values(struct vfe_device *vfe_dev)
+void msm_isp_save_framedrop_values(struct vfe_device *vfe_dev,
+				enum msm_vfe_input_src frame_src)
 {
 	struct msm_vfe_axi_stream *stream_info = NULL;
 	uint32_t j = 0;
+	unsigned long flags;
 
 	for (j = 0; j < VFE_AXI_SRC_MAX; j++) {
+		stream_info = &vfe_dev->axi_data.stream_info[j];
+		if (stream_info->state != ACTIVE)
+			continue;
+		if (frame_src != SRC_TO_INTF(stream_info->stream_src))
+			continue;
+
 		stream_info =
 			&vfe_dev->axi_data.stream_info[j];
-		stream_info->prev_framedrop_pattern =
-			stream_info->framedrop_pattern;
-		stream_info->prev_framedrop_period =
-			stream_info->framedrop_period;
+		spin_lock_irqsave(&stream_info->lock, flags);
+		stream_info->activated_framedrop_period  =
+			stream_info->requested_framedrop_period;
+		spin_unlock_irqrestore(&stream_info->lock, flags);
 	}
 }

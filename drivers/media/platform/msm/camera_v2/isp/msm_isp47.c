@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -317,9 +317,7 @@ camss_vdd_regulator_failed:
 	vfe_dev->fs_vfe = NULL;
 	msm_isp_deinit_bandwidth_mgr(ISP_VFE0 + vfe_dev->pdev->id);
 bus_scale_register_failed:
-	rc = cam_config_ahb_clk(CAM_AHB_CLIENT_VFE, CAMERA_AHB_SUSPEND_VOTE);
-	if (rc < 0)
-		pr_err("%s: failed to vote for AHB\n", __func__);
+	cam_config_ahb_clk(CAM_AHB_CLIENT_VFE, CAMERA_AHB_SUSPEND_VOTE);
 ahb_vote_fail:
 	return rc;
 }
@@ -472,9 +470,12 @@ static void msm_vfe47_process_error_status(struct vfe_device *vfe_dev)
 {
 	uint32_t error_status1 = vfe_dev->error_info.error_mask1;
 
-	if (error_status1 & (1 << 0))
+	if (error_status1 & (1 << 0)) {
 		pr_err("%s: camif error status: 0x%x\n",
 			__func__, vfe_dev->error_info.camif_status);
+		/* dump camif registers on camif error */
+		msm_camera_io_dump(vfe_dev->vfe_base + 0x478, 0x34, 1);
+	}
 	if (error_status1 & (1 << 1))
 		pr_err("%s: stats bhist overwrite\n", __func__);
 	if (error_status1 & (1 << 2))
@@ -526,18 +527,40 @@ static void msm_vfe47_process_error_status(struct vfe_device *vfe_dev)
 		pr_err("%s: status dsp error\n", __func__);
 }
 
+static void msm_vfe47_enable_camif_error(struct vfe_device *vfe_dev,
+			int enable)
+{
+	uint32_t val;
+
+	val = msm_camera_io_r(vfe_dev->vfe_base + 0x60);
+	if (enable)
+		msm_camera_io_w_mb(val | BIT(0), vfe_dev->vfe_base + 0x60);
+	else
+		msm_camera_io_w_mb(val & ~(BIT(0)), vfe_dev->vfe_base + 0x60);
+}
+
 static void msm_vfe47_read_irq_status(struct vfe_device *vfe_dev,
 	uint32_t *irq_status0, uint32_t *irq_status1)
 {
+	uint32_t irq_mask0, irq_mask1;
+
 	*irq_status0 = msm_camera_io_r(vfe_dev->vfe_base + 0x6C);
 	*irq_status1 = msm_camera_io_r(vfe_dev->vfe_base + 0x70);
+	/* Mask off bits that are not enabled */
 	msm_camera_io_w(*irq_status0, vfe_dev->vfe_base + 0x64);
 	msm_camera_io_w(*irq_status1, vfe_dev->vfe_base + 0x68);
 	msm_camera_io_w_mb(1, vfe_dev->vfe_base + 0x58);
+	irq_mask0 = msm_camera_io_r(vfe_dev->vfe_base + 0x5C);
+	irq_mask1 = msm_camera_io_r(vfe_dev->vfe_base + 0x60);
+	*irq_status0 &= irq_mask0;
+	*irq_status1 &= irq_mask1;
 
-	if (*irq_status1 & (1 << 0))
+	if (*irq_status1 & (1 << 0)) {
 		vfe_dev->error_info.camif_status =
 		msm_camera_io_r(vfe_dev->vfe_base + 0x4A4);
+		/* mask off camif error after first occurrance */
+		msm_vfe47_enable_camif_error(vfe_dev, 0);
+	}
 
 	if (*irq_status1 & (1 << 7))
 		vfe_dev->error_info.violation_status =
@@ -566,7 +589,8 @@ static void msm_vfe47_process_reg_update(struct vfe_device *vfe_dev,
 				(uint32_t)BIT(i));
 			switch (i) {
 			case VFE_PIX_0:
-				msm_isp_save_framedrop_values(vfe_dev);
+				msm_isp_save_framedrop_values(vfe_dev,
+					VFE_PIX_0);
 				msm_isp_notify(vfe_dev, ISP_EVENT_REG_UPDATE,
 					VFE_PIX_0, ts);
 				if (atomic_read(
@@ -581,6 +605,7 @@ static void msm_vfe47_process_reg_update(struct vfe_device *vfe_dev,
 			case VFE_RAW_1:
 			case VFE_RAW_2:
 				msm_isp_increment_frame_id(vfe_dev, i, ts);
+				msm_isp_save_framedrop_values(vfe_dev, i);
 				msm_isp_notify(vfe_dev, ISP_EVENT_SOF, i, ts);
 				msm_isp_update_framedrop_reg(vfe_dev, i);
 				/*
@@ -624,11 +649,11 @@ static void msm_vfe47_process_epoch_irq(struct vfe_device *vfe_dev,
 		return;
 
 	if (irq_status0 & BIT(2)) {
-		msm_isp_notify(vfe_dev, ISP_EVENT_SOF, VFE_PIX_0, ts);
 		ISP_DBG("%s: EPOCH0 IRQ\n", __func__);
 		msm_isp_update_framedrop_reg(vfe_dev, VFE_PIX_0);
 		msm_isp_update_stats_framedrop_reg(vfe_dev);
 		msm_isp_update_error_frame_count(vfe_dev);
+		msm_isp_notify(vfe_dev, ISP_EVENT_SOF, VFE_PIX_0, ts);
 		if (vfe_dev->axi_data.src_info[VFE_PIX_0].raw_stream_count > 0
 			&& vfe_dev->axi_data.src_info[VFE_PIX_0].
 			pix_stream_count == 0) {
@@ -819,7 +844,7 @@ static void msm_vfe47_cfg_framedrop(void __iomem *vfe_base,
 		temp = msm_camera_io_r(vfe_base +
 			VFE47_WM_BASE(stream_info->wm[i]) + 0x14);
 		temp &= 0xFFFFFF83;
-		msm_camera_io_w(temp | framedrop_period << 2,
+		msm_camera_io_w(temp | (framedrop_period - 1) << 2,
 		vfe_base + VFE47_WM_BASE(stream_info->wm[i]) + 0x14);
 	}
 }
@@ -974,39 +999,58 @@ static int msm_vfe47_start_fetch_engine(struct vfe_device *vfe_dev,
 	void *arg)
 {
 	int rc = 0;
-	uint32_t bufq_handle;
+	uint32_t bufq_handle = 0;
 	struct msm_isp_buffer *buf = NULL;
 	struct msm_vfe_fetch_eng_start *fe_cfg = arg;
+	struct msm_isp_buffer_mapped_info mapped_info;
 
 	if (vfe_dev->fetch_engine_info.is_busy == 1) {
 		pr_err("%s: fetch engine busy\n", __func__);
 		return -EINVAL;
 	}
 
+	memset(&mapped_info, 0, sizeof(struct msm_isp_buffer_mapped_info));
+
 	/* There is other option of passing buffer address from user,
 		in such case, driver needs to map the buffer and use it*/
-	bufq_handle = vfe_dev->buf_mgr->ops->get_bufq_handle(
-		vfe_dev->buf_mgr, fe_cfg->session_id, fe_cfg->stream_id);
-	vfe_dev->fetch_engine_info.bufq_handle = bufq_handle;
 	vfe_dev->fetch_engine_info.session_id = fe_cfg->session_id;
 	vfe_dev->fetch_engine_info.stream_id = fe_cfg->stream_id;
+	vfe_dev->fetch_engine_info.offline_mode = fe_cfg->offline_mode;
+	vfe_dev->fetch_engine_info.fd = fe_cfg->fd;
 
-	rc = vfe_dev->buf_mgr->ops->get_buf_by_index(
-		vfe_dev->buf_mgr, bufq_handle, fe_cfg->buf_idx, &buf);
-	if (rc < 0) {
-		pr_err("%s: No fetch buffer\n", __func__);
-		return -EINVAL;
+	if (!fe_cfg->offline_mode) {
+		bufq_handle = vfe_dev->buf_mgr->ops->get_bufq_handle(
+			vfe_dev->buf_mgr, fe_cfg->session_id,
+			fe_cfg->stream_id);
+		vfe_dev->fetch_engine_info.bufq_handle = bufq_handle;
+
+		rc = vfe_dev->buf_mgr->ops->get_buf_by_index(
+			vfe_dev->buf_mgr, bufq_handle, fe_cfg->buf_idx, &buf);
+		if (rc < 0 || !buf) {
+			pr_err("%s: No fetch buffer rc= %d buf= %p\n",
+				__func__, rc, buf);
+			return -EINVAL;
+		}
+		mapped_info = buf->mapped_info[0];
+		buf->state = MSM_ISP_BUFFER_STATE_DISPATCHED;
+	} else {
+		rc = vfe_dev->buf_mgr->ops->map_buf(vfe_dev->buf_mgr,
+			&mapped_info, fe_cfg->fd);
+		if (rc < 0) {
+			pr_err("%s: can not map buffer\n", __func__);
+			return -EINVAL;
+		}
 	}
+
 	vfe_dev->fetch_engine_info.buf_idx = fe_cfg->buf_idx;
 	vfe_dev->fetch_engine_info.is_busy = 1;
 
-	msm_camera_io_w(buf->mapped_info[0].paddr, vfe_dev->vfe_base + 0x2F4);
+	msm_camera_io_w(mapped_info.paddr, vfe_dev->vfe_base + 0x2F4);
 
 	msm_camera_io_w_mb(0x100000, vfe_dev->vfe_base + 0x80);
 	msm_camera_io_w_mb(0x200000, vfe_dev->vfe_base + 0x80);
 
 	ISP_DBG("%s:VFE%d Fetch Engine ready\n", __func__, vfe_dev->pdev->id);
-	buf->state = MSM_ISP_BUFFER_STATE_DISPATCHED;
 
 	return 0;
 }
@@ -1346,6 +1390,11 @@ static void msm_vfe47_update_camif_state(struct vfe_device *vfe_dev,
 		if (vfe_dev->axi_data.src_info[VFE_PIX_0].input_mux == TESTGEN)
 			msm_camera_io_w(1, vfe_dev->vfe_base + 0xC58);
 	} else if (update_state == DISABLE_CAMIF) {
+/*LGE_CHANGE_S, CST, add QCT patch about watch dog  when smmu page fault */
+		val = msm_camera_io_r(vfe_dev->vfe_base + 0x464);
+		/* disable danger signal */
+		msm_camera_io_w_mb(val & ~(1 << 8), vfe_dev->vfe_base + 0x464);
+/*LGE_CHANGE_E, CST, add QCT patch about watch dog  when smmu page fault */
 		msm_camera_io_w_mb(0x0, vfe_dev->vfe_base + 0x478);
 		vfe_dev->axi_data.src_info[VFE_PIX_0].active = 0;
 		/* testgen OFF*/
@@ -1357,6 +1406,11 @@ static void msm_vfe47_update_camif_state(struct vfe_device *vfe_dev,
 			msm_vfe47_configure_hvx(vfe_dev, 0);
 
 	} else if (update_state == DISABLE_CAMIF_IMMEDIATELY) {
+/*LGE_CHANGE_S, CST, add QCT patch about watch dog  when smmu page fault */
+		val = msm_camera_io_r(vfe_dev->vfe_base + 0x464);
+		/* disable danger signal */
+		msm_camera_io_w_mb(val & ~(1 << 8), vfe_dev->vfe_base + 0x464);
+/*LGE_CHANGE_E, CST, add QCT patch about watch dog  when smmu page fault */
 		msm_camera_io_w_mb(0x6, vfe_dev->vfe_base + 0x478);
 		vfe_dev->axi_data.src_info[VFE_PIX_0].active = 0;
 		if (vfe_dev->axi_data.src_info[VFE_PIX_0].input_mux == TESTGEN)
@@ -2261,6 +2315,7 @@ struct msm_vfe_hardware_info vfe47_hw_info = {
 			.process_axi_irq = msm_isp_process_axi_irq,
 			.process_stats_irq = msm_isp_process_stats_irq,
 			.process_epoch_irq = msm_vfe47_process_epoch_irq,
+			.enable_camif_err = msm_vfe47_enable_camif_error,
 		},
 		.axi_ops = {
 			.reload_wm = msm_vfe47_axi_reload_wm,

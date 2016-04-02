@@ -48,6 +48,9 @@
 #define ROME3_0_USB_RAMPATCH_FILE	"ar3k/rampatch_tlv_usb_3.0.tlv"
 #define ROME3_0_USB_NVM_FILE		"ar3k/nvm_tlv_usb_3.0.bin"
 
+#define TF1_1_USB_RAMPATCH_FILE	"ar3k/rampatch_tlv_usb_tf_1.1.tlv"
+#define TF1_1_USB_NVM_FILE		"ar3k/nvm_tlv_usb_tf_1.1.bin"
+
 #define ROME2_1_USB_RAMPATCH_HEADER	sizeof(struct rome2_1_version)
 #define ROME1_1_USB_RAMPATCH_HEADER	sizeof(struct rome1_1_version)
 
@@ -57,7 +60,9 @@
 #define ROME1_1_USB_CHIP_VERSION		0x101
 #define ROME2_1_USB_CHIP_VERSION		0x200
 #define ROME3_0_USB_CHIP_VERSION		0x300
+#define ROME3_2_USB_CHIP_VERSION		0x302
 
+#define TF1_1_USB_PRODUCT_ID			0xe500
 #define ATH3K_DNLOAD				0x01
 #define ATH3K_GETSTATE				0x05
 #define ATH3K_SET_NORMAL_MODE			0x07
@@ -122,14 +127,13 @@ static struct usb_device_id ath3k_table[] = {
 	{ USB_DEVICE(0x03F0, 0x311D) },
 
 	/* Atheros AR3012 with sflash firmware*/
-	{ USB_DEVICE(0x0489, 0xe04d) },
-	{ USB_DEVICE(0x0489, 0xe04e) },
-	{ USB_DEVICE(0x0489, 0xe057) },
-	{ USB_DEVICE(0x0489, 0xe056) },
-	{ USB_DEVICE(0x0489, 0xe05f) },
-	{ USB_DEVICE(0x0489, 0xe076) },
-	{ USB_DEVICE(0x0489, 0xe078) },
-	{ USB_DEVICE(0x04c5, 0x1330) },
+	{ USB_DEVICE(0x0CF3, 0x0036) },
+	{ USB_DEVICE(0x0CF3, 0x3004) },
+	{ USB_DEVICE(0x0CF3, 0x3008) },
+	{ USB_DEVICE(0x0CF3, 0x311D) },
+	{ USB_DEVICE(0x0CF3, 0x817a) },
+	{ USB_DEVICE(0x0CF3, 0xe500) },
+	{ USB_DEVICE(0x13d3, 0x3375) },
 	{ USB_DEVICE(0x04CA, 0x3004) },
 	{ USB_DEVICE(0x04CA, 0x3005) },
 	{ USB_DEVICE(0x04CA, 0x3006) },
@@ -351,6 +355,7 @@ int get_rome_version(struct usb_device *udev, struct ath3k_version *version)
 	case ROME1_1_USB_CHIP_VERSION:
 	case ROME2_1_USB_CHIP_VERSION:
 	case ROME3_0_USB_CHIP_VERSION:
+	case ROME3_2_USB_CHIP_VERSION:
 		memcpy(version, &fw_version, sizeof(struct ath3k_version));
 		ret = 0;
 		break;
@@ -452,6 +457,9 @@ static int ath3k_set_normal_mode(struct usb_device *udev)
 			NULL, 0, USB_CTRL_SET_TIMEOUT);
 }
 
+DECLARE_RWSEM(btusb_pm_sem);
+EXPORT_SYMBOL(btusb_pm_sem);
+
 static int ath3k_load_patch(struct usb_device *udev,
 						struct ath3k_version *version)
 {
@@ -471,11 +479,10 @@ static int ath3k_load_patch(struct usb_device *udev,
 
 	if ((fw_state == ATH3K_PATCH_UPDATE) ||
 		(fw_state == ATH3K_PATCH_SYSCFG_UPDATE)) {
-		BT_INFO("%s: Patch already downloaded(fw_state: %d)", __func__,
-			fw_state);
+		BT_INFO("Patch already downloaded(fw_state: %d)", fw_state);
 		return 0;
-	}
-	BT_DBG("Downloading RamPatch(fw_state: %d)", fw_state);
+	} else
+		BT_DBG("Downloading RamPatch(fw_state: %d)", fw_state);
 
 	switch (version->rom_version) {
 	case ROME1_1_USB_CHIP_VERSION:
@@ -490,6 +497,16 @@ static int ath3k_load_patch(struct usb_device *udev,
 		BT_DBG("Chip Detected as ROME3.0");
 		snprintf(filename, ATH3K_NAME_LEN, ROME3_0_USB_RAMPATCH_FILE);
 		break;
+	case ROME3_2_USB_CHIP_VERSION:
+		if (udev->descriptor.idProduct == TF1_1_USB_PRODUCT_ID) {
+			BT_DBG("Chip Detected as TF1.1");
+			snprintf(filename, ATH3K_NAME_LEN,
+						TF1_1_USB_RAMPATCH_FILE);
+		} else {
+			BT_INFO("Unsupported Chip");
+			return -ENODEV;
+		}
+		break;
 	default:
 		BT_DBG("Chip Detected as Ath3k");
 		snprintf(filename, ATH3K_NAME_LEN, "ar3k/AthrBT_0x%08x.dfu",
@@ -497,14 +514,18 @@ static int ath3k_load_patch(struct usb_device *udev,
 		break;
 	}
 
+	down_read(&btusb_pm_sem);
 	ret = request_firmware(&firmware, filename, &udev->dev);
 	if (ret < 0) {
 		BT_ERR("Patch file not found %s", filename);
+		up_read(&btusb_pm_sem);
 		return ret;
 	}
+	up_read(&btusb_pm_sem);
 
 	if ((version->rom_version == ROME2_1_USB_CHIP_VERSION) ||
-		(version->rom_version == ROME3_0_USB_CHIP_VERSION)) {
+		(version->rom_version == ROME3_0_USB_CHIP_VERSION) ||
+		(version->rom_version == ROME3_2_USB_CHIP_VERSION)) {
 		rome2_1_version = (struct rome2_1_version *) firmware->data;
 		pt_version.rom_version = rome2_1_version->build_ver;
 		pt_version.build_version = rome2_1_version->patch_ver;
@@ -534,7 +555,8 @@ static int ath3k_load_patch(struct usb_device *udev,
 	}
 
 	if ((version->rom_version == ROME2_1_USB_CHIP_VERSION) ||
-		(version->rom_version == ROME3_0_USB_CHIP_VERSION))
+		(version->rom_version == ROME3_0_USB_CHIP_VERSION) ||
+		(version->rom_version == ROME3_2_USB_CHIP_VERSION))
 		ret = ath3k_load_fwfile(udev, firmware,
 						ROME2_1_USB_RAMPATCH_HEADER);
 	else if (version->rom_version == ROME1_1_USB_CHIP_VERSION)
@@ -589,7 +611,14 @@ static int ath3k_load_syscfg(struct usb_device *udev,
 		snprintf(filename, ATH3K_NAME_LEN, ROME2_1_USB_NVM_FILE);
 	else if (version->rom_version == ROME3_0_USB_CHIP_VERSION)
 		snprintf(filename, ATH3K_NAME_LEN, ROME3_0_USB_NVM_FILE);
-	else if (version->rom_version == ROME1_1_USB_CHIP_VERSION)
+	else if (version->rom_version == ROME3_2_USB_CHIP_VERSION) {
+		if (udev->descriptor.idProduct == TF1_1_USB_PRODUCT_ID)
+			snprintf(filename, ATH3K_NAME_LEN, TF1_1_USB_NVM_FILE);
+		else {
+			BT_INFO("Unsupported Chip");
+			return -ENODEV;
+		}
+	} else if (version->rom_version == ROME1_1_USB_CHIP_VERSION)
 		snprintf(filename, ATH3K_NAME_LEN, ROME1_1_USB_NVM_FILE);
 	else
 		snprintf(filename, ATH3K_NAME_LEN, "ar3k/ramps_0x%08x_%d%s",
@@ -602,7 +631,8 @@ static int ath3k_load_syscfg(struct usb_device *udev,
 	}
 
 	if ((version->rom_version == ROME2_1_USB_CHIP_VERSION) ||
-		(version->rom_version == ROME3_0_USB_CHIP_VERSION))
+		(version->rom_version == ROME3_0_USB_CHIP_VERSION) ||
+		(version->rom_version == ROME3_2_USB_CHIP_VERSION))
 		ret = ath3k_load_fwfile(udev, firmware, ROME2_1_USB_NVM_HEADER);
 	else if (version->rom_version == ROME1_1_USB_CHIP_VERSION)
 		ret = ath3k_load_fwfile(udev, firmware, ROME1_1_USB_NVM_HEADER);

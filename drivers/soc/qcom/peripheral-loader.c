@@ -156,6 +156,10 @@ int pil_do_ramdump(struct pil_desc *desc, void *ramdump_dev)
 	if (!ramdump_segs)
 		return -ENOMEM;
 
+	if (desc->subsys_vmid > 0)
+		ret = pil_assign_mem_to_linux(desc, priv->region_start,
+				(priv->region_end - priv->region_start));
+
 	s = ramdump_segs;
 	list_for_each_entry(seg, &priv->segs, list) {
 		s->address = seg->paddr;
@@ -165,6 +169,10 @@ int pil_do_ramdump(struct pil_desc *desc, void *ramdump_dev)
 
 	ret = do_elf_ramdump(ramdump_dev, ramdump_segs, count);
 	kfree(ramdump_segs);
+
+	if (!ret && desc->subsys_vmid > 0)
+		ret = pil_assign_mem_to_subsys(desc, priv->region_start,
+				(priv->region_end - priv->region_start));
 
 	return ret;
 }
@@ -226,7 +234,7 @@ int pil_reclaim_mem(struct pil_desc *desc, phys_addr_t addr, size_t size,
 	int ret;
 	int srcVM[2] = {VMID_HLOS, desc->subsys_vmid};
 	int destVM[1] = {VMid};
-	int destVMperm[1] = {PERM_READ | PERM_WRITE};
+	int destVMperm[1] = {PERM_READ | PERM_WRITE | PERM_EXEC};
 
 	if (VMid == VMID_HLOS)
 		destVMperm[0] = PERM_READ | PERM_WRITE | PERM_EXEC;
@@ -441,6 +449,7 @@ static int pil_alloc_region(struct pil_priv *priv, phys_addr_t min_addr,
 	else
 		aligned_size = ALIGN(size, SZ_1M);
 
+	init_dma_attrs(&priv->desc->attrs);
 	dma_set_attr(DMA_ATTR_SKIP_ZEROING, &priv->desc->attrs);
 	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &priv->desc->attrs);
 
@@ -549,16 +558,7 @@ static int pil_init_mmap(struct pil_desc *desc, const struct pil_mdt *mdt)
 	if (ret)
 		return ret;
 
-	if (desc->subsys_vmid > 0) {
-		ret = pil_assign_mem_to_subsys_and_linux(desc,
-				priv->region_start,
-				(priv->region_end - priv->region_start));
-		if (ret) {
-			pil_err(desc, "Failed to assign memory, ret - %d\n",
-								ret);
-			return ret;
-		}
-	}
+
 	pil_info(desc, "loading from %pa to %pa\n", &priv->region_start,
 							&priv->region_end);
 
@@ -741,6 +741,7 @@ int pil_boot(struct pil_desc *desc)
 	const struct firmware *fw;
 	struct pil_priv *priv = desc->priv;
 	bool mem_protect = false;
+    bool hyp_assign = false;
 
 	if (desc->shutdown_fail)
 		pil_err(desc, "Subsystem shutdown failed previously!\n");
@@ -783,8 +784,6 @@ int pil_boot(struct pil_desc *desc)
 		goto release_fw;
 	}
 
-	init_dma_attrs(&desc->attrs);
-
 	ret = pil_init_mmap(desc, mdt);
 	if (ret)
 		goto release_fw;
@@ -811,6 +810,28 @@ int pil_boot(struct pil_desc *desc)
 		goto err_deinit_image;
 	}
 
+	if (desc->subsys_vmid > 0) {
+		/* Make sure the memory is actually assigned to Linux. In the
+		 * case where the shutdown sequence is not able to immediately
+		 * assign the memory back to Linux, we need to do this here. */
+		pil_info(desc, "%s pil assign mem to linux", fw_name);
+		ret = pil_assign_mem_to_linux(desc, priv->region_start,
+				(priv->region_end - priv->region_start));
+		if (ret)
+			pil_err(desc, "Failed to assign to linux, ret - %d\n",
+								ret);
+		pil_info(desc, "%s pil assign mem to subsys and linux", fw_name);
+		ret = pil_assign_mem_to_subsys_and_linux(desc,
+				priv->region_start,
+				(priv->region_end - priv->region_start));
+		if (ret) {
+			pil_err(desc, "Failed to assign memory, ret - %d\n",
+								ret);
+			goto err_deinit_image;
+		}
+    hyp_assign = true;
+	}
+
 	list_for_each_entry(seg, &desc->priv->segs, list) {
 		ret = pil_load_seg(desc, seg);
 		if (ret)
@@ -826,8 +847,9 @@ int pil_boot(struct pil_desc *desc)
 							desc->name, ret);
 			goto err_deinit_image;
 		}
+    hyp_assign = false;
 	}
-
+	pil_info(desc, "%s starting auth and reset", fw_name);
 	ret = desc->ops->auth_and_reset(desc);
 	if (ret) {
 		pil_err(desc, "Failed to bring out of reset\n");
@@ -853,7 +875,8 @@ out:
 	up_read(&pil_pm_rwsem);
 	if (ret) {
 		if (priv->region) {
-			if (desc->subsys_vmid > 0 && !mem_protect) {
+            if (desc->subsys_vmid > 0 && !mem_protect &&
+                hyp_assign) {
 				pil_reclaim_mem(desc, priv->region_start,
 					(priv->region_end -
 						priv->region_start),

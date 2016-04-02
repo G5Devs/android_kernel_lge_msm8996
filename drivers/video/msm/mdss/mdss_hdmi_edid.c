@@ -26,6 +26,11 @@
  */
 #define MAX_DATA_BLOCK_SIZE 31
 
+#ifdef DEV_DBG
+#undef DEV_DBG
+#define DEV_DBG(fmt, args...)  pr_err(fmt, ##args)
+#endif
+
 #define HDMI_VSDB_3D_EVF_DATA_OFFSET(vsd) \
 	(!((vsd)[8] & BIT(7)) ? 9 : (!((vsd)[8] & BIT(6)) ? 11 : 13))
 
@@ -62,6 +67,7 @@
 #define EDID_VENDOR_ID_SIZE     4
 #define EDID_IEEE_REG_ID        0x0c03
 
+#define LGE_TEMP_PATCH_FOR_4K_OUT_FORMAT_TO_RGB
 enum edid_sink_mode {
 	SINK_MODE_DVI,
 	SINK_MODE_HDMI
@@ -91,7 +97,7 @@ enum extended_data_block_types {
 
 struct disp_mode_info {
 	u32 video_format;
-	u32 video_3d_format;
+	u32 video_3d_format; /* Flags like SIDE_BY_SIDE_HALF*/
 	bool rgb_support;
 	bool y420_support;
 };
@@ -532,7 +538,9 @@ static ssize_t hdmi_edid_sysfs_rda_3d_modes(struct device *dev,
 			edid_ctrl->sink_data.disp_mode_list;
 
 		for (i = 0; i < edid_ctrl->sink_data.num_of_elements; i++) {
-			ret = hdmi_get_video_3d_fmt_2string(
+			if (!video_mode[i].video_3d_format)
+				continue;
+			hdmi_get_video_3d_fmt_2string(
 					video_mode[i].video_3d_format,
 					buff_3d,
 					sizeof(buff_3d));
@@ -545,9 +553,6 @@ static ssize_t hdmi_edid_sysfs_rda_3d_modes(struct device *dev,
 					"%d=%s", video_mode[i].video_format,
 					buff_3d);
 		}
-	} else {
-		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "%d",
-			edid_ctrl->video_resolution);
 	}
 
 	DEV_DBG("%s: '%s'\n", __func__, buf);
@@ -701,6 +706,7 @@ static const u8 *hdmi_edid_find_block(const u8 *in_buf, u32 start_offset,
 	return NULL;
 } /* hdmi_edid_find_block */
 
+#ifndef LGE_TEMP_PATCH_FOR_4K_OUT_FORMAT_TO_RGB
 static void hdmi_edid_set_y420_support(struct hdmi_edid_ctrl *edid_ctrl,
 				  u32 video_format)
 {
@@ -726,12 +732,31 @@ static void hdmi_edid_set_y420_support(struct hdmi_edid_ctrl *edid_ctrl,
 static void hdmi_edid_add_sink_y420_format(struct hdmi_edid_ctrl *edid_ctrl,
 					   u32 video_format)
 {
+#ifdef CONFIG_SLIMPORT_CONSTRAINT_4K_30FPS
+	struct msm_hdmi_mode_timing_info timing = {0};
+	u32 ret;
+	u32 supported;
+	struct hdmi_edid_sink_data *sink;
+
+	if (video_format == HDMI_VFRMT_4096x2160p50_256_135 ||
+		video_format == HDMI_VFRMT_4096x2160p60_256_135) {
+		DEV_ERR("%s: %d is spec out of slimport. Set 4096x2160 30fps.\n", __func__, video_format);
+		video_format = HDMI_VFRMT_4096x2160p30_256_135;
+	}
+
+	ret = hdmi_get_supported_mode(&timing,
+				edid_ctrl->init_data.ds_data,
+				video_format);
+	supported = hdmi_edid_is_mode_supported(edid_ctrl, &timing);
+	sink = &edid_ctrl->sink_data;
+#else
 	struct msm_hdmi_mode_timing_info timing = {0};
 	u32 ret = hdmi_get_supported_mode(&timing,
 				edid_ctrl->init_data.ds_data,
 				video_format);
 	u32 supported = hdmi_edid_is_mode_supported(edid_ctrl, &timing);
 	struct hdmi_edid_sink_data *sink = &edid_ctrl->sink_data;
+#endif
 
 	if (video_format >= HDMI_VFRMT_MAX) {
 		DEV_ERR("%s: video format: %s is not supported\n", __func__,
@@ -847,6 +872,7 @@ static void hdmi_edid_parse_hvdb(struct hdmi_edid_ctrl *edid_ctrl,
 	sink_caps->osd_disparity = (in_buf[4] * 0x01) ? true : false;
 
 }
+#endif
 
 static void hdmi_edid_extract_extended_data_blocks(
 	struct hdmi_edid_ctrl *edid_ctrl, const u8 *in_buf)
@@ -909,6 +935,7 @@ static void hdmi_edid_extract_extended_data_blocks(
 				edid_ctrl->it_scan_info,
 				edid_ctrl->ce_scan_info);
 			break;
+#ifndef LGE_TEMP_PATCH_FOR_4K_OUT_FORMAT_TO_RGB
 		case HDMI_VIDEO_DATA_BLOCK:
 			/* HDMI Video data block defined in HDMI 2.0 */
 			DEV_DBG("%s: EDID: HVDB found\n", __func__);
@@ -924,6 +951,7 @@ static void hdmi_edid_extract_extended_data_blocks(
 				__func__, etag[2]);
 			hdmi_edid_parse_Y420VDB(edid_ctrl, etag);
 			break;
+#endif
 		default:
 			DEV_DBG("%s: Tag Code %d not supported\n",
 				__func__, etag[1]);
@@ -1208,9 +1236,9 @@ static void hdmi_edid_detail_desc(struct hdmi_edid_ctrl *edid_ctrl,
 	u32	pulse_width_v       = 0;
 	u32	active_low_h        = 0;
 	u32	active_low_v        = 0;
-
+	const u32 khz_to_hz         = 1000;
+	u32 frame_data;
 	struct msm_hdmi_mode_timing_info timing = {0};
-	u64 rr_tmp, frame_data;
 	int rc;
 
 	/*
@@ -1326,15 +1354,10 @@ static void hdmi_edid_detail_desc(struct hdmi_edid_ctrl *edid_ctrl,
 	active_low_h = ((data_buf[0x11] & BIT(1)) &&
 				(data_buf[0x11] & BIT(4))) ? 0 : 1;
 
-	DEV_DBG("%s: A[%ux%u] B[%ux%u] V[%ux%u] %s\n", __func__,
-		active_h, active_v, blank_h, blank_v, img_size_h, img_size_v,
-		interlaced ? "i" : "p");
-
-	rr_tmp = pixel_clk * 1000 * 1000;
-	frame_data = (blank_h + active_h) * (blank_v + active_v);
+	frame_data = (active_h + blank_h) * (active_v + blank_v);
 
 	if (frame_data) {
-		do_div(rr_tmp, frame_data);
+		int refresh_rate_khz = (pixel_clk * khz_to_hz) / frame_data;
 
 		timing.active_h      = active_h;
 		timing.front_porch_h = front_porch_h;
@@ -1349,12 +1372,17 @@ static void hdmi_edid_detail_desc(struct hdmi_edid_ctrl *edid_ctrl,
 					(front_porch_v + pulse_width_v);
 		timing.active_low_v  = active_low_v;
 		timing.pixel_freq    = pixel_clk;
-		timing.refresh_rate  = (u32) rr_tmp;
+		timing.refresh_rate  = refresh_rate_khz * khz_to_hz;
 		timing.interlaced    = interlaced;
 		timing.supported     = true;
 		timing.ar            = aspect_ratio_4_3 ? HDMI_RES_AR_4_3 :
 					(aspect_ratio_5_4 ? HDMI_RES_AR_5_4 :
 					HDMI_RES_AR_16_9);
+
+		DEV_DBG("%s: new res: %dx%d%s@%dHz\n", __func__,
+			timing.active_h, timing.active_v,
+			interlaced ? "i" : "p",
+			timing.refresh_rate / khz_to_hz);
 
 		rc = hdmi_set_resv_timing_info(&timing);
 	} else {
@@ -1371,6 +1399,63 @@ static void hdmi_edid_detail_desc(struct hdmi_edid_ctrl *edid_ctrl,
 	}
 } /* hdmi_edid_detail_desc */
 
+#ifdef CONFIG_SLIMPORT_COMMON
+extern unchar sp_get_rx_bw(void);
+void limit_supported_video_format(u32 *video_format)
+{
+	u32 pre_video_format = *video_format;
+
+	switch (sp_get_rx_bw()) {
+	case 0x0a:
+		if ((*video_format == HDMI_VFRMT_1920x1080p60_16_9) ||
+			(*video_format == HDMI_VFRMT_2880x480p60_4_3) ||
+			(*video_format == HDMI_VFRMT_2880x480p60_16_9) ||
+			(*video_format == HDMI_VFRMT_1280x720p120_16_9))
+			*video_format = HDMI_VFRMT_1280x720p60_16_9;
+		else if ((*video_format == HDMI_VFRMT_1920x1080p50_16_9) ||
+			(*video_format == HDMI_VFRMT_2880x576p50_4_3) ||
+			(*video_format == HDMI_VFRMT_2880x576p50_16_9) ||
+			(*video_format == HDMI_VFRMT_1280x720p100_16_9))
+			*video_format = HDMI_VFRMT_1280x720p50_16_9;
+		else if (*video_format == HDMI_VFRMT_1920x1080i100_16_9)
+			*video_format = HDMI_VFRMT_1920x1080i50_16_9;
+		else if (*video_format == HDMI_VFRMT_1920x1080i120_16_9)
+			*video_format = HDMI_VFRMT_1920x1080i60_16_9;
+		else if (*video_format == HDMI_VFRMT_1280x1024p60_5_4)
+			*video_format = HDMI_VFRMT_1024x768p60_4_3;
+		else if ((*video_format >= HDMI_EVFRMT_3840x2160p30_16_9) &&
+			(*video_format <= HDMI_VFRMT_2560x1600p60_16_9))
+			*video_format = HDMI_VFRMT_1280x720p60_16_9;
+		else if ((*video_format == HDMI_VFRMT_1920x1080p100_64_27) ||
+			(*video_format == HDMI_VFRMT_1920x1080p120_64_27) ||
+			((*video_format >= HDMI_VFRMT_1680x720p100_64_27) &&
+			 (*video_format <= HDMI_VFRMT_3840x2160p60_64_27)))
+			*video_format = HDMI_VFRMT_1280x720p60_16_9;
+		break;
+	case 0x06:
+		if (*video_format != HDMI_VFRMT_640x480p60_4_3)
+			*video_format = HDMI_VFRMT_640x480p60_4_3;
+		break;
+	case 0x14:
+		if ((*video_format == HDMI_VFRMT_1920x1080p100_64_27) ||
+			(*video_format == HDMI_VFRMT_1920x1080p120_64_27) ||
+			((*video_format >= HDMI_VFRMT_1680x720p100_64_27) &&
+			 (*video_format <= HDMI_VFRMT_3840x2160p60_64_27)))
+			*video_format = HDMI_VFRMT_1920x1080p60_16_9;
+
+		else if ((*video_format >= HDMI_EVFRMT_3840x2160p30_16_9) &&
+			(*video_format <= HDMI_VFRMT_2560x1600p60_16_9))
+			*video_format = HDMI_VFRMT_1920x1080p60_16_9;
+		break;
+	default:
+		break;
+	}
+	DEV_ERR("%s: limit resolution %s => %s", __func__, msm_hdmi_mode_2string(pre_video_format),
+			msm_hdmi_mode_2string(*video_format));
+
+}
+#endif
+
 static void hdmi_edid_add_sink_3d_format(struct hdmi_edid_sink_data *sink_data,
 	u32 video_format, u32 video_3d_format)
 {
@@ -1378,6 +1463,16 @@ static void hdmi_edid_add_sink_3d_format(struct hdmi_edid_sink_data *sink_data,
 	u32 added = false;
 	int i;
 
+#ifdef CONFIG_SLIMPORT_COMMON
+#ifdef CONFIG_SLIMPORT_CONSTRAINT_4K_30FPS
+	if (video_format == HDMI_VFRMT_4096x2160p50_256_135 ||
+		video_format == HDMI_VFRMT_4096x2160p60_256_135) {
+		DEV_ERR("%s: %d is spec out of slimport. Set 4096x2160 30fps.\n", __func__, video_format);
+		video_format = HDMI_VFRMT_4096x2160p30_256_135;
+	}
+#endif
+	limit_supported_video_format(&video_format);
+#endif
 	for (i = 0; i < sink_data->num_of_elements; ++i) {
 		if (sink_data->disp_mode_list[i].video_format == video_format) {
 			sink_data->disp_mode_list[i].video_3d_format |=
@@ -1397,6 +1492,27 @@ static void hdmi_edid_add_sink_3d_format(struct hdmi_edid_sink_data *sink_data,
 static void hdmi_edid_add_sink_video_format(struct hdmi_edid_ctrl *edid_ctrl,
 	u32 video_format)
 {
+#ifdef CONFIG_SLIMPORT_COMMON
+#ifdef CONFIG_SLIMPORT_CONSTRAINT_4K_30FPS
+	struct msm_hdmi_mode_timing_info timing = {0};
+	u32 ret;
+	u32 supported;
+	struct hdmi_edid_sink_data *sink_data;
+	struct disp_mode_info *disp_mode_list;
+
+	if (video_format == HDMI_VFRMT_4096x2160p50_256_135 ||
+		video_format == HDMI_VFRMT_4096x2160p60_256_135) {
+		DEV_ERR("%s: %d is spec out of slimport. Set 4096x2160 30fps.\n", __func__, video_format);
+		video_format = HDMI_VFRMT_4096x2160p30_256_135;
+	}
+
+	ret = hdmi_get_supported_mode(&timing,
+				edid_ctrl->init_data.ds_data,
+				video_format);
+	supported = hdmi_edid_is_mode_supported(edid_ctrl, &timing);
+	sink_data = &edid_ctrl->sink_data;
+	disp_mode_list = sink_data->disp_mode_list;
+#else
 	struct msm_hdmi_mode_timing_info timing = {0};
 	u32 ret = hdmi_get_supported_mode(&timing,
 				edid_ctrl->init_data.ds_data,
@@ -1404,6 +1520,9 @@ static void hdmi_edid_add_sink_video_format(struct hdmi_edid_ctrl *edid_ctrl,
 	u32 supported = hdmi_edid_is_mode_supported(edid_ctrl, &timing);
 	struct hdmi_edid_sink_data *sink_data = &edid_ctrl->sink_data;
 	struct disp_mode_info *disp_mode_list = sink_data->disp_mode_list;
+#endif
+	limit_supported_video_format(&video_format);
+#endif
 
 	if (video_format >= HDMI_VFRMT_MAX) {
 		DEV_ERR("%s: video format: %s is not supported\n", __func__,
@@ -1766,6 +1885,10 @@ static void hdmi_edid_get_display_mode(struct hdmi_edid_ctrl *edid_ctrl)
 			 * while the Video identification code is 1 based in the
 			 * CEA_861D spec
 			 */
+			 /* Add LG VR SVD LGE_S */
+			video_format = (*svd & 0xFF);
+			if (video_format < LGVR_OFF(1) || video_format > LGVR_VFRMT_END)
+			 /* Add LG VR SVD LGE_E */
 			video_format = (*svd & 0x7F);
 			hdmi_edid_add_sink_video_format(edid_ctrl,
 				video_format);
@@ -2175,6 +2298,30 @@ u32 hdmi_edid_get_sink_mode(void *input)
 
 	return edid_ctrl->sink_mode;
 } /* hdmi_edid_get_sink_mode */
+
+bool hdmi_edid_is_s3d_mode_supported(void *input, u32 video_mode, u32 s3d_mode)
+{
+	int i;
+	bool ret = false;
+	struct hdmi_edid_ctrl *edid_ctrl = (struct hdmi_edid_ctrl *)input;
+	struct hdmi_edid_sink_data *sink_data;
+
+	sink_data = &edid_ctrl->sink_data;
+	for (i = 0; i < sink_data->num_of_elements; ++i) {
+		if (sink_data->disp_mode_list[i].video_format != video_mode)
+			continue;
+		if (sink_data->disp_mode_list[i].video_3d_format &
+			(1 << s3d_mode))
+			ret = true;
+		else
+			DEV_DBG("%s: return false: vic=%d caps=%x s3d=%d\n",
+				__func__, video_mode,
+				sink_data->disp_mode_list[i].video_3d_format,
+				s3d_mode);
+		break;
+	}
+	return ret;
+}
 
 bool hdmi_edid_get_scdc_support(void *input)
 {

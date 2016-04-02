@@ -25,7 +25,7 @@ struct sched_param {
 #include <linux/errno.h>
 #include <linux/nodemask.h>
 #include <linux/mm_types.h>
-#include <linux/preempt_mask.h>
+#include <linux/preempt.h>
 
 #include <asm/page.h>
 #include <asm/ptrace.h>
@@ -1314,6 +1314,8 @@ struct task_struct {
 	 * of this task
 	 */
 	u32 init_load_pct;
+	u64 last_wake_ts;
+	u64 last_switch_out_ts;
 #ifdef CONFIG_SCHED_QHMP
 	u64 run_start;
 #endif
@@ -2171,6 +2173,8 @@ extern void sched_set_cpu_cstate(int cpu, int cstate,
 			 int wakeup_energy, int wakeup_latency);
 extern void sched_set_cluster_dstate(const cpumask_t *cluster_cpus, int dstate,
 				int wakeup_energy, int wakeup_latency);
+/* ADAPT_LGE_BMC */
+extern int sched_get_cpu_cstate(int cpu);
 #else
 static inline void do_set_cpus_allowed(struct task_struct *p,
 				      const struct cpumask *new_mask)
@@ -2190,6 +2194,11 @@ sched_set_cpu_cstate(int cpu, int cstate, int wakeup_energy, int wakeup_latency)
 
 static inline void sched_set_cluster_dstate(const cpumask_t *cluster_cpus,
 			int dstate, int wakeup_energy, int wakeup_latency)
+{
+}
+
+/* ADAPT_LGE_BMC */
+static inline int sched_get_cpu_cstate(int cpu)
 {
 }
 #endif
@@ -2264,6 +2273,7 @@ extern u64 cpu_clock(int cpu);
 extern u64 local_clock(void);
 extern u64 sched_clock_cpu(int cpu);
 
+extern u64 sched_ktime_clock(void);
 
 extern void sched_clock_init(void);
 extern int sched_clock_initialized(void);
@@ -2932,12 +2942,6 @@ extern int _cond_resched(void);
 })
 
 extern int __cond_resched_lock(spinlock_t *lock);
-
-#ifdef CONFIG_PREEMPT_COUNT
-#define PREEMPT_LOCK_OFFSET	PREEMPT_OFFSET
-#else
-#define PREEMPT_LOCK_OFFSET	0
-#endif
 
 #define cond_resched_lock(lock) ({				\
 	__might_sleep(__FILE__, __LINE__, PREEMPT_LOCK_OFFSET);	\

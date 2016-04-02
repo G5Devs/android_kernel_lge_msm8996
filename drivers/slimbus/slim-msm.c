@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -15,6 +15,7 @@
 #include <linux/slab.h>
 #include <linux/slimbus/slimbus.h>
 #include <linux/msm-sps.h>
+#include <linux/gcd.h>
 #include "slim-msm.h"
 
 int msm_slim_rx_enqueue(struct msm_slim_ctrl *dev, u32 *buf, u8 len)
@@ -178,18 +179,64 @@ int msm_slim_sps_mem_alloc(
 void
 msm_slim_sps_mem_free(struct msm_slim_ctrl *dev, struct sps_mem_buffer *mem)
 {
-	dma_free_coherent(dev->dev, mem->size, mem->base, mem->phys_base);
+	if (mem->base && mem->phys_base)
+		dma_free_coherent(dev->dev, mem->size, mem->base,
+							mem->phys_base);
+	 else
+		dev_err(dev->dev, "cant dma free. they are NULL\n");
 	mem->size = 0;
 	mem->base = NULL;
 	mem->phys_base = 0;
 }
 
-void msm_hw_set_port(struct msm_slim_ctrl *dev, u8 pn)
+void msm_hw_set_port(struct msm_slim_ctrl *dev, u8 pipenum, u8 portnum)
 {
-	u32 set_cfg = DEF_WATERMARK | DEF_ALIGN | DEF_PACK | ENABLE_PORT;
-	writel_relaxed(set_cfg, PGD_PORT(PGD_PORT_CFGn, pn, dev->ver));
-	writel_relaxed(DEF_BLKSZ, PGD_PORT(PGD_PORT_BLKn, pn, dev->ver));
-	writel_relaxed(DEF_TRANSZ, PGD_PORT(PGD_PORT_TRANn, pn, dev->ver));
+	struct slim_controller *ctrl;
+	struct slim_ch *chan;
+	struct msm_slim_pshpull_parm *parm;
+	u32 set_cfg = 0;
+	struct slim_port_cfg cfg = dev->ctrl.ports[portnum].cfg;
+
+	if (!dev) {
+		pr_err("%s:Dev node is null\n", __func__);
+		return;
+	}
+	if (portnum >= dev->port_nums) {
+		pr_err("%s:Invalid port\n", __func__);
+		return;
+	}
+	ctrl = &dev->ctrl;
+	chan = ctrl->ports[portnum].ch;
+	parm = &dev->pipes[portnum].psh_pull;
+
+	if (cfg.watermark)
+		set_cfg = (cfg.watermark << 1);
+	else
+		set_cfg = DEF_WATERMARK;
+
+	if (cfg.port_opts & SLIM_OPT_NO_PACK)
+		set_cfg |= DEF_NO_PACK;
+	else
+		set_cfg |= DEF_PACK;
+
+	if (cfg.port_opts & SLIM_OPT_ALIGN_MSB)
+		set_cfg |= DEF_ALIGN_MSB;
+	else
+		set_cfg |= DEF_ALIGN_LSB;
+
+	set_cfg |= ENABLE_PORT;
+
+	writel_relaxed(set_cfg, PGD_PORT(PGD_PORT_CFGn, pipenum, dev->ver));
+	writel_relaxed(DEF_BLKSZ, PGD_PORT(PGD_PORT_BLKn, pipenum, dev->ver));
+	writel_relaxed(DEF_TRANSZ, PGD_PORT(PGD_PORT_TRANn, pipenum, dev->ver));
+
+	if (chan->prot == SLIM_PUSH || chan->prot == SLIM_PULL) {
+		set_cfg = 0;
+		set_cfg |= ((0xFFFF & parm->num_samples)<<16);
+		set_cfg |= (0xFFFF & parm->rpt_period);
+		writel_relaxed(set_cfg, PGD_PORT(PGD_PORT_PSHPLLn,
+							pipenum, dev->ver));
+	}
 	/* Make sure that port registers are updated before returning */
 	mb();
 }
@@ -212,15 +259,49 @@ static void msm_slim_disconn_pipe_port(struct msm_slim_ctrl *dev, u8 pn)
 	dev->pipes[pn].connected = false;
 }
 
-int msm_slim_connect_pipe_port(struct msm_slim_ctrl *dev, u8 pn)
+static void msm_slim_calc_pshpull_parm(struct msm_slim_ctrl *dev,
+					u8 pn, struct slim_ch *prop)
 {
 	struct msm_slim_endp *endpoint = &dev->pipes[pn];
-	struct sps_connect *cfg = &endpoint->config;
+	struct msm_slim_pshpull_parm *parm = &endpoint->psh_pull;
+	int	chan_freq, round_off, divisor, super_freq;
+
+	super_freq = dev->ctrl.a_framer->superfreq;
+
+	if (prop->baser == SLIM_RATE_4000HZ)
+		chan_freq = 4000 * prop->ratem;
+	else if (prop->baser == SLIM_RATE_11025HZ)
+		chan_freq = 11025 * prop->ratem;
+	else
+		chan_freq = prop->baser * prop->ratem;
+
+	/*
+	 * If channel frequency is multiple of super frame frequency
+	 * ISO protocol is suggested
+	 */
+	if (!(chan_freq % super_freq)) {
+		prop->prot = SLIM_HARD_ISO;
+		return;
+	}
+	round_off = DIV_ROUND_UP(chan_freq, super_freq);
+	divisor = gcd(round_off * super_freq, chan_freq);
+	parm->num_samples = chan_freq/divisor;
+	parm->rpt_period = (round_off * super_freq)/divisor;
+}
+
+int msm_slim_connect_pipe_port(struct msm_slim_ctrl *dev, u8 pn)
+{
+	struct msm_slim_endp *endpoint;
+	struct sps_connect *cfg;
+	struct slim_ch *prop;
 	u32 stat;
 	int ret;
 
-	if (pn >= dev->port_nums)
+	if (!dev || pn >= dev->port_nums)
 		return -ENODEV;
+	endpoint = &dev->pipes[pn];
+	cfg = &endpoint->config;
+	prop = dev->ctrl.ports[pn].ch;
 
 	endpoint = &dev->pipes[pn];
 	ret = sps_get_config(dev->pipes[pn].sps, cfg);
@@ -230,6 +311,9 @@ int msm_slim_connect_pipe_port(struct msm_slim_ctrl *dev, u8 pn)
 	}
 	cfg->options = SPS_O_DESC_DONE | SPS_O_ERROR |
 				SPS_O_ACK_TRANSFERS | SPS_O_AUTO_ENABLE;
+
+	if (prop->prot == SLIM_PUSH || prop->prot ==  SLIM_PULL)
+		msm_slim_calc_pshpull_parm(dev, pn, prop);
 
 	if (dev->pipes[pn].connected &&
 			dev->ctrl.ports[pn].state == SLIM_P_CFG) {
@@ -244,7 +328,7 @@ int msm_slim_connect_pipe_port(struct msm_slim_ctrl *dev, u8 pn)
 			cfg->mode == SPS_MODE_DEST) ||
 			(dev->ctrl.ports[pn].flow == SLIM_SINK &&
 			 cfg->mode == SPS_MODE_SRC)) {
-			msm_hw_set_port(dev, endpoint->port_b);
+			msm_hw_set_port(dev, endpoint->port_b, pn);
 			return 0;
 		}
 		msm_slim_disconn_pipe_port(dev, pn);
@@ -279,7 +363,7 @@ int msm_slim_connect_pipe_port(struct msm_slim_ctrl *dev, u8 pn)
 
 	if (!ret) {
 		dev->pipes[pn].connected = true;
-		msm_hw_set_port(dev, endpoint->port_b);
+		msm_hw_set_port(dev, endpoint->port_b, pn);
 	}
 	return ret;
 }
@@ -447,7 +531,6 @@ void msm_slim_tx_msg_return(struct msm_slim_ctrl *dev, int err)
 			return;
 		}
 		if (addr == dev->bulk.wr_dma) {
-			SLIM_INFO(dev, "BULK WR complete");
 			dma_unmap_single(dev->dev, dev->bulk.wr_dma,
 					 dev->bulk.size, DMA_TO_DEVICE);
 			if (!dev->bulk.cb)
@@ -457,20 +540,19 @@ void msm_slim_tx_msg_return(struct msm_slim_ctrl *dev, int err)
 			dev->bulk.in_progress = false;
 			pm_runtime_mark_last_busy(dev->dev);
 			return;
+		} else if (addr < mem->phys_base ||
+			   (addr > (mem->phys_base +
+				    (MSM_TX_BUFS * SLIM_MSGQ_BUF_LEN)))) {
+			SLIM_WARN(dev, "BUF out of bounds:base:0x%pa, io:0x%pa",
+					&mem->phys_base, &addr);
+			continue;
 		}
 		idx = (int) ((addr - mem->phys_base)
 			/ SLIM_MSGQ_BUF_LEN);
-		if (idx < MSM_TX_BUFS && dev->wr_comp[idx]) {
+		if (dev->wr_comp[idx]) {
 			struct completion *comp = dev->wr_comp[idx];
 			dev->wr_comp[idx] = NULL;
 			complete(comp);
-		} else if (idx >= MSM_TX_BUFS) {
-			SLIM_ERR(dev, "BUF out of bounds:base:0x%pa, io:0x%pa",
-					&mem->phys_base, &addr);
-			/* print BAM debug info for TX pipe */
-			sps_get_bam_debug_info(dev->bam.hdl, 93,
-						SPS_BAM_PIPE(4), 0, 2);
-			continue;
 		}
 		if (err) {
 			int i;
@@ -479,10 +561,6 @@ void msm_slim_tx_msg_return(struct msm_slim_ctrl *dev, int err)
 			/* print the descriptor that resulted in error */
 			for (i = 0; i < (SLIM_MSGQ_BUF_LEN >> 2); i++)
 				SLIM_WARN(dev, "err desc[%d]:0x%x", i, addr[i]);
-			/* print BAM debug info for TX pipe for invalid TX */
-			if (err == -EINVAL)
-				sps_get_bam_debug_info(dev->bam.hdl, 93,
-							SPS_BAM_PIPE(4), 0, 2);
 		}
 		/* reclaim all packets that were delivered out of order */
 		if (idx != dev->tx_head)
@@ -1039,6 +1117,22 @@ void msm_slim_disconnect_endp(struct msm_slim_ctrl *dev,
 	}
 }
 
+static int msm_slim_discard_rx_data(struct msm_slim_ctrl *dev,
+					struct msm_slim_endp *endpoint)
+{
+	struct sps_iovec sio;
+	int desc_num = 0, ret = 0;
+
+	ret = sps_get_unused_desc_num(endpoint->sps, &desc_num);
+	if (ret) {
+		dev_err(dev->dev, "sps_get_iovec() failed 0x%x\n", ret);
+		return ret;
+	}
+	while (desc_num--)
+		sps_get_iovec(endpoint->sps, &sio);
+	return ret;
+}
+
 static void msm_slim_remove_ep(struct msm_slim_ctrl *dev,
 					struct msm_slim_endp *endpoint,
 					enum msm_slim_msgq *msgq_flag)
@@ -1046,15 +1140,36 @@ static void msm_slim_remove_ep(struct msm_slim_ctrl *dev,
 	struct sps_connect *config = &endpoint->config;
 	struct sps_mem_buffer *descr = &config->desc;
 	struct sps_mem_buffer *mem = &endpoint->buf;
+
+	msm_slim_sps_mem_free(dev, mem);
+	msm_slim_sps_mem_free(dev, descr);
+	msm_slim_free_endpoint(endpoint);
+}
+
+void msm_slim_deinit_ep(struct msm_slim_ctrl *dev,
+				struct msm_slim_endp *endpoint,
+				enum msm_slim_msgq *msgq_flag)
+{
+	int ret = 0;
+	struct sps_connect *config = &endpoint->config;
+
+	if (*msgq_flag == MSM_MSGQ_ENABLED) {
+		if (config->mode == SPS_MODE_SRC) {
+			ret = msm_slim_discard_rx_data(dev, endpoint);
+			if (ret)
+				SLIM_WARN(dev, "discarding Rx data failed\n");
+		}
+		msm_slim_disconnect_endp(dev, endpoint, msgq_flag);
+		msm_slim_remove_ep(dev, endpoint, msgq_flag);
+	}
+}
+
+static void msm_slim_sps_unreg_event(struct sps_pipe *sps)
+{
 	struct sps_register_event sps_event;
 	memset(&sps_event, 0x00, sizeof(sps_event));
-	msm_slim_sps_mem_free(dev, mem);
-	sps_register_event(endpoint->sps, &sps_event);
-	if (*msgq_flag == MSM_MSGQ_ENABLED) {
-		msm_slim_disconnect_endp(dev, endpoint, msgq_flag);
-		msm_slim_free_endpoint(endpoint);
-	}
-	msm_slim_sps_mem_free(dev, descr);
+	/* Disable interrupt and signal notification for Rx/Tx pipe */
+	sps_register_event(sps, &sps_event);
 }
 
 void msm_slim_sps_exit(struct msm_slim_ctrl *dev, bool dereg)
@@ -1062,9 +1177,10 @@ void msm_slim_sps_exit(struct msm_slim_ctrl *dev, bool dereg)
 	int i;
 
 	if (dev->use_rx_msgqs >= MSM_MSGQ_ENABLED)
-		msm_slim_remove_ep(dev, &dev->rx_msgq, &dev->use_rx_msgqs);
+		msm_slim_sps_unreg_event(dev->rx_msgq.sps);
 	if (dev->use_tx_msgqs >= MSM_MSGQ_ENABLED)
-		msm_slim_remove_ep(dev, &dev->tx_msgq, &dev->use_tx_msgqs);
+		msm_slim_sps_unreg_event(dev->tx_msgq.sps);
+
 	for (i = 0; i < dev->port_nums; i++) {
 		if (dev->pipes[i].connected)
 			msm_slim_disconn_pipe_port(dev, i);
@@ -1282,9 +1398,12 @@ static void msm_slim_qmi_recv_msg(struct kthread_work *work)
 	struct msm_slim_qmi *qmi =
 			container_of(work, struct msm_slim_qmi, kwork);
 
-	rc = qmi_recv_msg(qmi->handle);
-	if (rc < 0)
-		pr_err("%s: Error receiving QMI message\n", __func__);
+	/* Drain all packets received */
+	do {
+		rc = qmi_recv_msg(qmi->handle);
+	} while (rc == 0);
+	if (rc != -ENOMSG)
+		pr_err("%s: Error receiving QMI message:%d\n", __func__, rc);
 }
 
 static void msm_slim_qmi_notify(struct qmi_handle *handle,
@@ -1334,7 +1453,7 @@ static int msm_slim_qmi_send_select_inst_req(struct msm_slim_ctrl *dev,
 	resp_desc.ei_array = slimbus_select_inst_resp_msg_v01_ei;
 
 	rc = qmi_send_req_wait(dev->qmi.handle, &req_desc, req, sizeof(*req),
-					&resp_desc, &resp, sizeof(resp), 5000);
+			&resp_desc, &resp, sizeof(resp), SLIM_QMI_RESP_TOUT);
 	if (rc < 0) {
 		SLIM_ERR(dev, "%s: QMI send req failed %d\n", __func__, rc);
 		return rc;
@@ -1366,9 +1485,10 @@ static int msm_slim_qmi_send_power_request(struct msm_slim_ctrl *dev,
 	resp_desc.ei_array = slimbus_power_resp_msg_v01_ei;
 
 	rc = qmi_send_req_wait(dev->qmi.handle, &req_desc, req, sizeof(*req),
-					&resp_desc, &resp, sizeof(resp), 5000);
+			&resp_desc, &resp, sizeof(resp), SLIM_QMI_RESP_TOUT);
 	if (rc < 0) {
 		SLIM_ERR(dev, "%s: QMI send req failed %d\n", __func__, rc);
+		panic("[Audio BSP] Force crash QMI send req failed");
 		return rc;
 	}
 
@@ -1484,7 +1604,7 @@ int msm_slim_qmi_check_framer_request(struct msm_slim_ctrl *dev)
 	resp_desc.ei_array = slimbus_chkfrm_resp_msg_v01_ei;
 
 	rc = qmi_send_req_wait(dev->qmi.handle, &req_desc, NULL, 0,
-					&resp_desc, &resp, sizeof(resp), 5000);
+		&resp_desc, &resp, sizeof(resp), SLIM_QMI_RESP_TOUT);
 	if (rc < 0) {
 		SLIM_ERR(dev, "%s: QMI send req failed %d\n", __func__, rc);
 		return rc;

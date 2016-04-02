@@ -36,6 +36,7 @@
 	pr_err(DEV_NAME " %s:%d " fmt, __func__, __LINE__, ## args)
 
 extern struct ipa_qmi_context *ipa_qmi_ctx;
+extern struct mutex ipa_qmi_lock;
 
 struct ipa_qmi_context {
 struct ipa_ioc_ext_intf_prop q6_ul_filter_rule[MAX_NUM_Q6_RULE];
@@ -99,7 +100,7 @@ extern struct ipa_rmnet_context ipa_rmnet_ctx;
 
 #ifdef CONFIG_RMNET_IPA
 
-int ipa_qmi_service_init(bool load_uc, uint32_t wan_platform_type);
+int ipa_qmi_service_init(uint32_t wan_platform_type);
 
 void ipa_qmi_service_exit(void);
 
@@ -157,9 +158,13 @@ int ipa_qmi_stop_data_qouta(void);
 
 void ipa_q6_handshake_complete(bool ssr_bootup);
 
+void ipa_qmi_init(void);
+
+void ipa_qmi_cleanup(void);
+
 #else /* CONFIG_RMNET_IPA */
 
-static inline int ipa_qmi_service_init(bool load_uc, uint32_t wan_platform_type)
+static inline int ipa_qmi_service_init(uint32_t wan_platform_type)
 {
 	return -EPERM;
 }
@@ -261,6 +266,14 @@ static inline int ipa_qmi_stop_data_qouta(void)
 }
 
 static inline void ipa_q6_handshake_complete(bool ssr_bootup) { }
+
+static inline void ipa_qmi_init(void)
+{
+}
+
+static inline void ipa_qmi_cleanup(void)
+{
+}
 
 #endif /* CONFIG_RMNET_IPA */
 

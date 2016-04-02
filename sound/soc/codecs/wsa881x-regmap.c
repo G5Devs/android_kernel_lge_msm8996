@@ -224,14 +224,18 @@ void wsa881x_regmap_defaults(struct regmap *regmap, u8 version)
 
 	switch (version) {
 	case WSA881X_1_X:
-		ret = regmap_register_patch(regmap,
-					    wsa881x_rev_1_x,
-					    ARRAY_SIZE(wsa881x_rev_1_x));
+		regcache_cache_only(regmap, true);
+		ret = regmap_multi_reg_write(regmap,
+					     wsa881x_rev_1_x,
+					     ARRAY_SIZE(wsa881x_rev_1_x));
+		regcache_cache_only(regmap, false);
 		break;
 	case WSA881X_2_0:
-		ret = regmap_register_patch(regmap,
-					    wsa881x_rev_2_0,
-					    ARRAY_SIZE(wsa881x_rev_2_0));
+		regcache_cache_only(regmap, true);
+		ret = regmap_multi_reg_write(regmap,
+					     wsa881x_rev_2_0,
+					     ARRAY_SIZE(wsa881x_rev_2_0));
+		regcache_cache_only(regmap, false);
 		break;
 	default:
 		pr_debug("%s: unknown version", __func__);
@@ -281,7 +285,6 @@ static bool wsa881x_volatile_register(struct device *dev, unsigned int reg)
 	case WSA881X_TEMP_DOUT_LSB:
 	case WSA881X_TEMP_OP:
 	case WSA881X_SPKR_PROT_SAR:
-	case WSA881X_SPKR_OCP_CTL:
 		return true;
 	default:
 		return false;

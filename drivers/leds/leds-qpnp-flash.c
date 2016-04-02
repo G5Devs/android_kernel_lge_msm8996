@@ -98,7 +98,7 @@
 #define	FLASH_MAX_LEVEL						0x4F
 #define	FLASH_LED_FLASH_HW_VREG_OK				0x40
 #define	FLASH_LED_FLASH_SW_VREG_OK				0x80
-#define FLASH_LED_STROBE_TYPE_HW				0x40
+#define FLASH_LED_STROBE_TYPE_HW				0x04
 #define	FLASH_DURATION_DIVIDER					10
 #define	FLASH_LED_HEADROOM_DIVIDER				100
 #define	FLASH_LED_HEADROOM_OFFSET				2
@@ -115,6 +115,8 @@
 #define	FLASH_LED_MODULE_CTRL_DEFAULT				0x60
 #define	FLASH_LED_CURRENT_READING_DELAY_MIN			5000
 #define	FLASH_LED_CURRENT_READING_DELAY_MAX			5001
+#define PMI8996_SUBTYPE						19
+#define	FLASH_LED_OPEN_FAULT_DETECTED				0xC
 
 #define FLASH_UNLOCK_SECURE					0xA5
 #define FLASH_LED_TORCH_ENABLE					0x00
@@ -253,6 +255,7 @@ struct qpnp_flash_led {
 	bool				charging_enabled;
 	bool				strobe_debug;
 	bool				dbg_feature_en;
+	bool				open_fault;
 };
 
 static u8 qpnp_flash_led_ctrl_dbg_regs[] = {
@@ -904,7 +907,11 @@ static int qpnp_flash_led_module_disable(struct qpnp_flash_led *led,
 {
 	union power_supply_propval psy_prop;
 	int rc;
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	u8 val, tmp, pmi8996_ver_val;
+#else
 	u8 val, tmp;
+#endif
 
 	rc = spmi_ext_register_readl(led->spmi_dev->ctrl,
 				led->spmi_dev->sid,
@@ -938,6 +945,31 @@ static int qpnp_flash_led_module_disable(struct qpnp_flash_led *led,
 			}
 		}
 
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	//PMI8996 register : 0x102, PMI8996 v1.0 : 0x00, PMI8996 v1.1 : 0x01
+	rc = spmi_ext_register_readl(led->spmi_dev->ctrl,
+		0x2,
+		0x102,
+		&pmi8996_ver_val, 1);
+	if (rc) {
+		dev_err(&led->spmi_dev->dev,
+		"Unable to read from addr : %x, rc : %d\n",pmi8996_ver_val, rc);
+		return -EINVAL;
+	}
+	if(pmi8996_ver_val == 0x00) {
+		if (led->battery_psy) {
+			psy_prop.intval = false;
+			rc = led->battery_psy->set_property(led->battery_psy,
+			POWER_SUPPLY_PROP_FLASH_TRIGGER,
+			&psy_prop);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+				"Failed to enble charger i/p current limit\n");
+				return -EINVAL;
+			}
+		}
+	}
+#endif
 		rc = qpnp_led_masked_write(led->spmi_dev,
 				FLASH_MODULE_ENABLE_CTRL(led->base),
 				FLASH_MODULE_ENABLE_MASK,
@@ -996,7 +1028,7 @@ static int qpnp_flash_led_module_disable(struct qpnp_flash_led *led,
 	}
 
 	if (flash_node->id == FLASH_LED_SWITCH)
-		flash_node->trigger = 0;
+		flash_node->trigger &= FLASH_LED_STROBE_TYPE_HW;
 
 	return 0;
 }
@@ -1037,20 +1069,19 @@ static int flash_regulator_parse_dt(struct qpnp_flash_led *led,
 			return rc;
 		}
 
-		if (of_find_property(temp, "max-voltage", NULL)) {
-			rc = of_property_read_u32(temp, "max-voltage", &val);
-			if (!rc) {
-				flash_node->reg_data[i].max_volt_uv = val;
-			} else {
-				dev_err(&led->spmi_dev->dev,
-						"Unable to read max voltage\n");
-				return rc;
-			}
+		rc = of_property_read_u32(temp, "max-voltage", &val);
+		if (!rc) {
+			flash_node->reg_data[i].max_volt_uv = val;
+		} else if (rc != -EINVAL) {
+			dev_err(&led->spmi_dev->dev,
+					"Unable to read max voltage\n");
+			return rc;
 		}
+
 		i++;
 	}
 
-	return rc;
+	return 0;
 }
 
 static int flash_regulator_setup(struct qpnp_flash_led *led,
@@ -1092,6 +1123,19 @@ static int flash_regulator_setup(struct qpnp_flash_led *led,
 
 error_regulator_setup:
 	while (i--) {
+#ifdef CONFIG_MACH_LGE
+		if (IS_ERR_OR_NULL(flash_node->reg_data[i].regs)) {
+			flash_node->reg_data[i].regs =
+				regulator_get(flash_node->cdev.dev,
+						flash_node->reg_data[i].reg_name);
+			if (IS_ERR_OR_NULL(flash_node->reg_data[i].regs)) {
+				rc = PTR_ERR(flash_node->reg_data[i].regs);
+				dev_err(&led->spmi_dev->dev,
+						"Failed to get regulator %d\n", i);
+				continue;
+			}
+		}
+#endif
 		if (regulator_count_voltages(flash_node->reg_data[i].regs)
 									> 0) {
 			regulator_set_voltage(flash_node->reg_data[i].regs,
@@ -1143,15 +1187,30 @@ static void qpnp_flash_led_work(struct work_struct *work)
 	int max_curr_avail_ma = 0;
 	int total_curr_ma = 0;
 	int i;
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	u8 val, pmi8996_ver_val;
+#else
 	u8 val;
+#endif
 
 	mutex_lock(&led->flash_led_lock);
 
 	if (!brightness)
 		goto turn_off;
 
+	if (led->open_fault) {
+		dev_err(&led->spmi_dev->dev, "Open fault detected\n");
+		mutex_unlock(&led->flash_led_lock);
+		return;
+	}
+
 	if (!flash_node->flash_on && flash_node->num_regulators > 0) {
+#ifdef CONFIG_MACH_LGE
+		rc = flash_regulator_setup(led, flash_node, true);
+		rc |= flash_regulator_enable(led, flash_node, true);
+#else
 		rc = flash_regulator_enable(led, flash_node, true);
+#endif
 		if (rc) {
 			mutex_unlock(&led->flash_led_lock);
 			return;
@@ -1347,7 +1406,9 @@ static void qpnp_flash_led_work(struct work_struct *work)
 		rc = qpnp_led_masked_write(led->spmi_dev,
 			FLASH_LED_STROBE_CTRL(led->base),
 			(flash_node->id == FLASH_LED_SWITCH ? FLASH_STROBE_MASK
-							: flash_node->trigger),
+						| FLASH_LED_STROBE_TYPE_HW
+							: flash_node->trigger |
+						FLASH_LED_STROBE_TYPE_HW),
 							flash_node->trigger);
 		if (rc) {
 			dev_err(&led->spmi_dev->dev,
@@ -1502,7 +1563,28 @@ static void qpnp_flash_led_work(struct work_struct *work)
 			usleep_range(FLASH_RAMP_UP_DELAY_US_MIN,
 						FLASH_RAMP_UP_DELAY_US_MAX);
 		}
-
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	//PMI8996 register : 0x102, PMI8996 v1.0 : 0x00, PMI8996 v1.1 : 0x01
+	rc = spmi_ext_register_readl(led->spmi_dev->ctrl,
+		0x2,
+		0x102,
+		&pmi8996_ver_val, 1);
+	if (rc) {
+		dev_err(&led->spmi_dev->dev,
+		"Unable to read from addr : %x, rc : %d\n",pmi8996_ver_val, rc);
+		goto exit_flash_led_work;
+	}
+	if(pmi8996_ver_val == 0x00) {
+		rc = led->battery_psy->set_property(led->battery_psy,
+			POWER_SUPPLY_PROP_FLASH_TRIGGER,
+			&psy_prop);
+		if (rc) {
+		dev_err(&led->spmi_dev->dev,
+			"Failed to disable charger input current limit\n");
+		goto exit_flash_led_work;
+		}
+	}
+#endif
 		if (led->pdata->hdrm_sns_ch0_en ||
 					led->pdata->hdrm_sns_ch1_en) {
 			if (flash_node->id == FLASH_LED_SWITCH) {
@@ -1557,7 +1639,9 @@ static void qpnp_flash_led_work(struct work_struct *work)
 		rc = qpnp_led_masked_write(led->spmi_dev,
 			FLASH_LED_STROBE_CTRL(led->base),
 			(flash_node->id == FLASH_LED_SWITCH ? FLASH_STROBE_MASK
-							: flash_node->trigger),
+						| FLASH_LED_STROBE_TYPE_HW
+							: flash_node->trigger |
+						FLASH_LED_STROBE_TYPE_HW),
 							flash_node->trigger);
 		if (rc) {
 			dev_err(&led->spmi_dev->dev,
@@ -1592,10 +1676,30 @@ static void qpnp_flash_led_work(struct work_struct *work)
 	return;
 
 turn_off:
+	if (flash_node->type == TORCH) {
+		/*
+		 * Checking LED fault status detects hardware open fault.
+		 * If fault occurs, all subsequent LED enablement requests
+		 * will be rejected to protect hardware.
+		 */
+		rc = spmi_ext_register_readl(led->spmi_dev->ctrl,
+			led->spmi_dev->sid,
+			FLASH_LED_FAULT_STATUS(led->base), &val, 1);
+		if (rc) {
+			dev_err(&led->spmi_dev->dev,
+				"Failed to read out fault status register\n");
+			goto exit_flash_led_work;
+		}
+
+		led->open_fault = (val & FLASH_LED_OPEN_FAULT_DETECTED);
+	}
+
 	rc = qpnp_led_masked_write(led->spmi_dev,
 			FLASH_LED_STROBE_CTRL(led->base),
-			flash_node->id == FLASH_LED_SWITCH ? FLASH_STROBE_MASK
-						: flash_node->trigger,
+			(flash_node->id == FLASH_LED_SWITCH ? FLASH_STROBE_MASK
+						| FLASH_LED_STROBE_TYPE_HW
+						: flash_node->trigger
+						| FLASH_LED_STROBE_TYPE_HW),
 						FLASH_LED_DISABLE);
 	if (rc) {
 		dev_err(&led->spmi_dev->dev, "Strobe disable failed\n");
@@ -1640,8 +1744,15 @@ exit_flash_led_work:
 		goto exit_flash_led_work;
 	}
 error_enable_gpio:
+#ifdef CONFIG_MACH_LGE
+	if (flash_node->flash_on && flash_node->num_regulators > 0) {
+		flash_regulator_enable(led, flash_node, false);
+		flash_regulator_setup(led, flash_node,false);
+	}
+#else
 	if (flash_node->flash_on && flash_node->num_regulators > 0)
 		flash_regulator_enable(led, flash_node, false);
+#endif
 
 	flash_node->flash_on = false;
 	mutex_unlock(&led->flash_led_lock);
@@ -2170,9 +2281,13 @@ static int qpnp_flash_led_parse_common_dt(
 
 	led->pdata->hdrm_sns_ch1_en = of_property_read_bool(node,
 						"qcom,headroom-sense-ch1-enabled");
-
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	//Disable Current change by power detect enable (G4 deliver)
+	led->pdata->power_detect_en = false;
+#else
 	led->pdata->power_detect_en = of_property_read_bool(node,
 						"qcom,power-detect-enabled");
+#endif
 
 	led->pdata->mask3_en = of_property_read_bool(node,
 						"qcom,otst2-module-enabled");
@@ -2425,7 +2540,7 @@ static int qpnp_flash_led_probe(struct spmi_device *spmi)
 			goto error_led_register;
 		}
 
-		if (&led->flash_node[i].num_regulators) {
+		if (led->flash_node[i].num_regulators) {
 			rc = flash_regulator_parse_dt(led, &led->flash_node[i]);
 			if (rc) {
 				dev_err(&led->spmi_dev->dev,
@@ -2433,8 +2548,13 @@ static int qpnp_flash_led_probe(struct spmi_device *spmi)
 				goto error_led_register;
 			}
 
+#ifdef CONFIG_MACH_LGE
+			rc = flash_regulator_setup(led, &led->flash_node[i],
+									false);
+#else
 			rc = flash_regulator_setup(led, &led->flash_node[i],
 									true);
+#endif
 			if (rc) {
 				dev_err(&led->spmi_dev->dev,
 					"Unable to set up regulator\n");

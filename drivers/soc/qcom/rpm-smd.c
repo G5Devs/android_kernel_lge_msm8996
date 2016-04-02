@@ -82,7 +82,7 @@ static struct glink_apps_rpm_data *glink_data;
 #define DEFAULT_BUFFER_SIZE 256
 #define DEBUG_PRINT_BUFFER_SIZE 512
 #define MAX_SLEEP_BUFFER 128
-#define GFP_FLAG(noirq) (noirq ? GFP_ATOMIC : GFP_KERNEL)
+#define GFP_FLAG(noirq) (noirq ? GFP_ATOMIC : GFP_NOFS)
 #define INV_RSC "resource does not exist"
 #define ERR "err\0"
 #define MAX_ERR_BUFFER_SIZE 128
@@ -92,6 +92,8 @@ static struct glink_apps_rpm_data *glink_data;
 static ATOMIC_NOTIFIER_HEAD(msm_rpm_sleep_notifier);
 static bool standalone;
 static int probe_status = -EPROBE_DEFER;
+static int msm_rpm_read_smd_data(char *buf);
+static void msm_rpm_process_ack(uint32_t msg_id, int errno);
 
 int msm_rpm_register_notifier(struct notifier_block *nb)
 {
@@ -353,6 +355,7 @@ struct msm_rpm_wait_data {
 	bool ack_recd;
 	int errno;
 	struct completion ack;
+	bool delete_on_ack;
 };
 DEFINE_SPINLOCK(msm_rpm_list_lock);
 
@@ -513,13 +516,50 @@ static int msm_rpm_glink_rx_poll(void *glink_handle)
 	return ret;
 }
 
+/*
+ * Returns
+ *	= 0 on successful reads
+ *	> 0 on successful reads with no further data
+ *	standard Linux error codes on failure.
+ */
+static int msm_rpm_read_sleep_ack(void)
+{
+	int ret;
+	char buf[MAX_ERR_BUFFER_SIZE] = {0};
+	uint32_t msg_id;
+
+	if (glink_enabled)
+		ret = msm_rpm_glink_rx_poll(glink_data->glink_handle);
+	else {
+		ret = msm_rpm_read_smd_data(buf);
+		if (!ret)
+			ret = smd_is_pkt_avail(msm_rpm_data.ch_info);
+		/* Mimic Glink behavior to ensure that the data is read
+		 * and the msg is removed from the wait list. We should
+		 * have gotten here only when there are no drivers waiting
+		 * on ACKs. msm_rpm_get_entry_from_msg_id() return non-NULL
+		 * only then. So BUG_ON to ensure that we didn't accidentally
+		 * get here.
+		 */
+		msg_id = msm_rpm_get_msg_id_from_ack(buf);
+		msm_rpm_process_ack(msg_id, 0);
+	}
+	return ret;
+}
+
+static void msm_rpm_flush_noack_messages(void)
+{
+	while (!list_empty(&msm_rpm_wait_list))
+		msm_rpm_read_sleep_ack();
+}
+
 static int msm_rpm_flush_requests(bool print)
 {
 	struct rb_node *t;
 	int ret;
-	int pkt_sz;
-	char buf[MAX_ERR_BUFFER_SIZE] = {0};
 	int count = 0;
+
+	msm_rpm_flush_noack_messages();
 
 	for (t = rb_first(&tr_root); t; t = rb_next(t)) {
 
@@ -556,47 +596,12 @@ static int msm_rpm_flush_requests(bool print)
 		 * process these sleep set acks.
 		 */
 		if (count >= MAX_WAIT_ON_ACK) {
-			int len;
-			int timeout = 10;
-			int ret;
+			int ret = msm_rpm_read_sleep_ack();
 
-			if (glink_enabled) {
-				ret = msm_rpm_glink_rx_poll(
-						glink_data->glink_handle);
-				if (ret < 0)
-					return ret;
-
+			if (ret > 0)
 				count--;
-				continue;
-			}
-
-			while (timeout) {
-				if (smd_is_pkt_avail(msm_rpm_data.ch_info))
-					break;
-				/*
-				 * Sleep for 50us at a time before checking
-				 * for packet availability. The 50us is based
-				 * on the the time rpm could take to process
-				 * and send an ack for the sleep set request.
-				 */
-				udelay(50);
-				timeout--;
-			}
-
-			/*
-			 * On timeout return an error and exit the spinlock
-			 * control on this cpu. This will allow any other
-			 * core that has wokenup and trying to acquire the
-			 * spinlock from being locked out.
-			 */
-			if (!timeout) {
-				pr_err("Timed out waiting for RPM ACK\n");
-				return -EAGAIN;
-			}
-
-			pkt_sz = smd_cur_packet_size(msm_rpm_data.ch_info);
-			len = smd_read(msm_rpm_data.ch_info, buf, pkt_sz);
-			count--;
+			else
+				return ret;
 		}
 	}
 	return 0;
@@ -812,14 +817,18 @@ static void msm_rpm_notify(void *data, unsigned event)
 
 bool msm_rpm_waiting_for_ack(void)
 {
-	bool ret;
+	bool ret = false;
 	unsigned long flags;
+	struct msm_rpm_wait_data *elem = NULL;
 
 	spin_lock_irqsave(&msm_rpm_list_lock, flags);
-	ret = list_empty(&msm_rpm_wait_list);
+	elem = list_first_entry_or_null(&msm_rpm_wait_list,
+				struct msm_rpm_wait_data, list);
+	if (elem)
+		ret = !elem->delete_on_ack;
 	spin_unlock_irqrestore(&msm_rpm_list_lock, flags);
 
-	return !ret;
+	return ret;
 }
 
 static struct msm_rpm_wait_data *msm_rpm_get_entry_from_msg_id(uint32_t msg_id)
@@ -858,7 +867,7 @@ static uint32_t msm_rpm_get_next_msg_id(void)
 	return id;
 }
 
-static int msm_rpm_add_wait_list(uint32_t msg_id)
+static int msm_rpm_add_wait_list(uint32_t msg_id, bool delete_on_ack)
 {
 	unsigned long flags;
 	struct msm_rpm_wait_data *data =
@@ -871,8 +880,12 @@ static int msm_rpm_add_wait_list(uint32_t msg_id)
 	data->ack_recd = false;
 	data->msg_id = msg_id;
 	data->errno = INIT_ERROR;
+	data->delete_on_ack = delete_on_ack;
 	spin_lock_irqsave(&msm_rpm_list_lock, flags);
-	list_add(&data->list, &msm_rpm_wait_list);
+	if (delete_on_ack)
+		list_add_tail(&data->list, &msm_rpm_wait_list);
+	else
+		list_add(&data->list, &msm_rpm_wait_list);
 	spin_unlock_irqrestore(&msm_rpm_list_lock, flags);
 
 	return 0;
@@ -890,18 +903,22 @@ static void msm_rpm_free_list_entry(struct msm_rpm_wait_data *elem)
 
 static void msm_rpm_process_ack(uint32_t msg_id, int errno)
 {
-	struct list_head *ptr;
+	struct list_head *ptr, *next;
 	struct msm_rpm_wait_data *elem = NULL;
 	unsigned long flags;
 
 	spin_lock_irqsave(&msm_rpm_list_lock, flags);
 
-	list_for_each(ptr, &msm_rpm_wait_list) {
+	list_for_each_safe(ptr, next, &msm_rpm_wait_list) {
 		elem = list_entry(ptr, struct msm_rpm_wait_data, list);
 		if (elem && (elem->msg_id == msg_id)) {
 			elem->errno = errno;
 			elem->ack_recd = true;
 			complete(&elem->ack);
+			if (elem->delete_on_ack) {
+				list_del(&elem->list);
+				kfree(elem);
+			}
 			break;
 		}
 		elem = NULL;
@@ -1154,13 +1171,16 @@ static int msm_rpm_glink_send_buffer(char *buf, uint32_t size, bool noirq)
 	do {
 		ret = glink_tx(glink_data->glink_handle, buf, buf,
 					size, GLINK_TX_SINGLE_THREADED);
-		if (ret == -EBUSY) {
-			pr_warn("%s: Channel is not ready. ret = %d\n",
-							__func__, ret);
-			spin_unlock_irqrestore(&msm_rpm_data.smd_lock_write,
-									flags);
-			udelay(5);
-			spin_lock_irqsave(&msm_rpm_data.smd_lock_write, flags);
+		if (ret == -EBUSY || ret == -ENOSPC) {
+			if (!noirq) {
+				spin_unlock_irqrestore(
+					&msm_rpm_data.smd_lock_write, flags);
+				cpu_relax();
+				spin_lock_irqsave(
+					&msm_rpm_data.smd_lock_write, flags);
+			} else {
+				udelay(5);
+			}
 			timeout--;
 		} else {
 			ret = 0;
@@ -1259,8 +1279,7 @@ static int msm_rpm_send_data(struct msm_rpm_request *cdata,
 		return ret;
 	}
 
-	if (!noack)
-		msm_rpm_add_wait_list(cdata->msg_hdr.msg_id);
+	msm_rpm_add_wait_list(cdata->msg_hdr.msg_id, noack);
 
 	ret = msm_rpm_send_buffer(&cdata->buf[0], msg_size, noirq);
 
@@ -1561,8 +1580,14 @@ EXPORT_SYMBOL(msm_rpm_enter_sleep);
  */
 void msm_rpm_exit_sleep(void)
 {
+	int ret;
+
 	if (standalone)
 		return;
+
+	do  {
+		ret =  msm_rpm_read_sleep_ack();
+	} while (ret > 0);
 
 	if (!glink_enabled)
 		smd_mask_receive_interrupt(msm_rpm_data.ch_info, false, NULL);

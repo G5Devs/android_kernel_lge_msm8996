@@ -453,6 +453,7 @@ struct kgsl_device_private {
  * @work: worker to dump the frozen memory
  * @dump_gate: completion gate signaled by worker when it is finished.
  * @process: the process that caused the hang, if known.
+ * @sysfs_read: An atomic for concurrent snapshot reads via syfs.
  */
 struct kgsl_snapshot {
 	u8 *start;
@@ -467,6 +468,7 @@ struct kgsl_snapshot {
 	struct work_struct work;
 	struct completion dump_gate;
 	struct kgsl_process_private *process;
+	atomic_t sysfs_read;
 };
 
 /**
@@ -509,6 +511,17 @@ static inline void kgsl_regwrite(struct kgsl_device *device,
 				 unsigned int value)
 {
 	device->ftbl->regwrite(device, offsetwords, value);
+}
+
+static inline void kgsl_regrmw(struct kgsl_device *device,
+		unsigned int offsetwords,
+		unsigned int mask, unsigned int bits)
+{
+	unsigned int val = 0;
+
+	device->ftbl->regread(device, offsetwords, &val);
+	val &= ~mask;
+	device->ftbl->regwrite(device, offsetwords, val | bits);
 }
 
 static inline int kgsl_idle(struct kgsl_device *device)

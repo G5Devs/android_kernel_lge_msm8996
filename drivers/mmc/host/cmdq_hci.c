@@ -132,23 +132,6 @@ static void cmdq_clear_set_irqs(struct cmdq_host *cq_host, u32 clear, u32 set)
 
 #define DRV_NAME "cmdq-host"
 
-static void cmdq_dump_debug_ram(struct cmdq_host *cq_host)
-{
-	int i = 0;
-
-	pr_err("---- Debug RAM dump ----\n");
-	pr_err(DRV_NAME ": Debug RAM wrap-around: 0x%08x | Debug RAM overlap: 0x%08x\n",
-	       cmdq_readl(cq_host, CQ_CMD_DBG_RAM_WA),
-	       cmdq_readl(cq_host, CQ_CMD_DBG_RAM_OL));
-
-	while (i < 16) {
-		pr_err(DRV_NAME ": Debug RAM dump [%d]: 0x%08x\n", i,
-		       cmdq_readl(cq_host, CQ_CMD_DBG_RAM + (0x4 * i)));
-		i++;
-	}
-	pr_err("-------------------------\n");
-}
-
 static void cmdq_dumpregs(struct cmdq_host *cq_host)
 {
 	struct mmc_host *mmc = cq_host->mmc;
@@ -193,7 +176,6 @@ static void cmdq_dumpregs(struct cmdq_host *cq_host)
 	       cmdq_readl(cq_host, CQ_VENDOR_CFG));
 	pr_err(DRV_NAME ": ===========================================\n");
 
-	cmdq_dump_debug_ram(cq_host);
 	if (cq_host->ops->dump_vendor_regs)
 		cq_host->ops->dump_vendor_regs(mmc);
 }
@@ -649,8 +631,6 @@ static int cmdq_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		goto out;
 	}
 
-	BUG_ON(cmdq_readl(cq_host, CQTDBR) & (1 << tag));
-
 	cq_host->mrq_slot[tag] = mrq;
 	if (cq_host->ops->set_tranfer_params)
 		cq_host->ops->set_tranfer_params(mmc);
@@ -661,6 +641,10 @@ static int cmdq_request(struct mmc_host *mmc, struct mmc_request *mrq)
 ring_doorbell:
 	/* Ensure the task descriptor list is flushed before ringing doorbell */
 	wmb();
+	if (cmdq_readl(cq_host, CQTDBR) & (1 << tag)) {
+		cmdq_dumpregs(cq_host);
+		BUG_ON(1);
+	}
 	cmdq_writel(cq_host, 1 << tag, CQTDBR);
 	/* Commit the doorbell write immediately */
 	wmb();
@@ -680,7 +664,7 @@ static void cmdq_finish_data(struct mmc_host *mmc, unsigned int tag)
 
 	if (mrq->cmdq_req->cmdq_req_flags & DCMD)
 		cmdq_writel(cq_host, cmdq_readl(cq_host, CQ_VENDOR_CFG) |
-			    CMDQ_SEND_STATUS_TRIGGER, CQCTL);
+			    CMDQ_SEND_STATUS_TRIGGER, CQ_VENDOR_CFG);
 
 	cmdq_runtime_pm_put(cq_host);
 	if (cq_host->ops->crypto_cfg_reset)
@@ -753,18 +737,28 @@ irqreturn_t cmdq_irq(struct mmc_host *mmc, int err)
 	}
 
 	if (status & CQIS_TCC) {
-		/* read QCTCN and complete the request */
+		/* read CQTCN and complete the request */
 		comp_status = cmdq_readl(cq_host, CQTCN);
 		if (!comp_status)
 			goto out;
-
+		/*
+		 * The CQTCN must be cleared before notifying req completion
+		 * to upper layers to avoid missing completion notification
+		 * of new requests with the same tag.
+		 */
+		cmdq_writel(cq_host, comp_status, CQTCN);
+		/*
+		 * A write memory barrier is necessary to guarantee that CQTCN
+		 * gets cleared first before next doorbell for the same tag is
+		 * set but that is already achieved by the barrier present
+		 * before setting doorbell, hence one is not needed here.
+		 */
 		for_each_set_bit(tag, &comp_status, cq_host->num_slots) {
 			/* complete the corresponding mrq */
 			pr_debug("%s: completing tag -> %lu\n",
 				 mmc_hostname(mmc), tag);
 			cmdq_finish_data(mmc, tag);
 		}
-		cmdq_writel(cq_host, comp_status, CQTCN);
 	}
 
 	if (status & CQIS_HAC) {
@@ -784,17 +778,27 @@ static int cmdq_halt(struct mmc_host *mmc, bool halt)
 {
 	struct cmdq_host *cq_host = (struct cmdq_host *)mmc_cmdq_private(mmc);
 	u32 ret = 0;
+	int retries = 3;
 
 	cmdq_runtime_pm_get(cq_host);
 	if (halt) {
-		cmdq_writel(cq_host, cmdq_readl(cq_host, CQCTL) | HALT,
-			    CQCTL);
-		ret = wait_for_completion_timeout(&cq_host->halt_comp,
+		while (retries) {
+			cmdq_writel(cq_host, cmdq_readl(cq_host, CQCTL) | HALT,
+				    CQCTL);
+			ret = wait_for_completion_timeout(&cq_host->halt_comp,
 					  msecs_to_jiffies(HALT_TIMEOUT_MS));
-		/* halt done: re-enable legacy interrupts */
-		if (cq_host->ops->clear_set_irqs)
-			cq_host->ops->clear_set_irqs(mmc, false);
-		ret = ret ? 0 : -ETIMEDOUT;
+			if (!ret && !(cmdq_readl(cq_host, CQCTL) & HALT)) {
+				retries--;
+				continue;
+			} else {
+				/* halt done: re-enable legacy interrupts */
+				if (cq_host->ops->clear_set_irqs)
+					cq_host->ops->clear_set_irqs(mmc,
+								false);
+				break;
+			}
+		}
+		ret = retries ? 0 : -ETIMEDOUT;
 	} else {
 		if (cq_host->ops->set_data_timeout)
 			cq_host->ops->set_data_timeout(mmc, 0xf);

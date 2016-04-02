@@ -83,6 +83,7 @@ static const int ep_mapping[3][IPA_CLIENT_MAX] = {
 	[IPA_1_1][IPA_CLIENT_ODU_PROD]           = -1,
 	[IPA_1_1][IPA_CLIENT_MHI_PROD]           = -1,
 	[IPA_1_1][IPA_CLIENT_Q6_LAN_PROD]        =  5,
+	[IPA_1_1][IPA_CLIENT_Q6_WAN_PROD]        = -1,
 	[IPA_1_1][IPA_CLIENT_Q6_CMD_PROD]        = -1,
 
 	[IPA_1_1][IPA_CLIENT_HSIC1_CONS]         = 14,
@@ -129,6 +130,7 @@ static const int ep_mapping[3][IPA_CLIENT_MAX] = {
 	[IPA_2_0][IPA_CLIENT_ODU_PROD]           = 12,
 	[IPA_2_0][IPA_CLIENT_MHI_PROD]           = 18,
 	[IPA_2_0][IPA_CLIENT_Q6_LAN_PROD]        =  6,
+	[IPA_2_0][IPA_CLIENT_Q6_WAN_PROD]	 = -1,
 	[IPA_2_0][IPA_CLIENT_Q6_CMD_PROD]        =  7,
 	[IPA_2_0][IPA_CLIENT_Q6_DECOMP_PROD]     = -1,
 	[IPA_2_0][IPA_CLIENT_Q6_DECOMP2_PROD]    = -1,
@@ -202,6 +204,7 @@ static const int ep_mapping[3][IPA_CLIENT_MAX] = {
 	[IPA_2_6L][IPA_CLIENT_ODU_PROD]           = -1,
 	[IPA_2_6L][IPA_CLIENT_MHI_PROD]           = -1,
 	[IPA_2_6L][IPA_CLIENT_Q6_LAN_PROD]        =  6,
+	[IPA_2_6L][IPA_CLIENT_Q6_WAN_PROD]	  = -1,
 	[IPA_2_6L][IPA_CLIENT_Q6_CMD_PROD]        =  7,
 	[IPA_2_6L][IPA_CLIENT_Q6_DECOMP_PROD]     = 11,
 	[IPA_2_6L][IPA_CLIENT_Q6_DECOMP2_PROD]    = 13,
@@ -4934,6 +4937,7 @@ int ipa2_bind_api_controller(enum ipa_hw_type ipa_hw_type,
 	api_ctrl->ipa_connect = ipa2_connect;
 	api_ctrl->ipa_disconnect = ipa2_disconnect;
 	api_ctrl->ipa_reset_endpoint = ipa2_reset_endpoint;
+	api_ctrl->ipa_clear_endpoint_delay = ipa2_clear_endpoint_delay;
 	api_ctrl->ipa_cfg_ep = ipa2_cfg_ep;
 	api_ctrl->ipa_cfg_ep_nat = ipa2_cfg_ep_nat;
 	api_ctrl->ipa_cfg_ep_hdr = ipa2_cfg_ep_hdr;
@@ -5048,6 +5052,7 @@ int ipa2_bind_api_controller(enum ipa_hw_type ipa_hw_type,
 	api_ctrl->ipa_write_qmap_id = ipa2_write_qmap_id;
 	api_ctrl->ipa_add_interrupt_handler = ipa2_add_interrupt_handler;
 	api_ctrl->ipa_remove_interrupt_handler = ipa2_remove_interrupt_handler;
+	api_ctrl->ipa_restore_suspend_handler = ipa2_restore_suspend_handler;
 	api_ctrl->ipa_bam_reg_dump = ipa2_bam_reg_dump;
 	api_ctrl->ipa_get_ep_mapping = ipa2_get_ep_mapping;
 	api_ctrl->ipa_is_ready = ipa2_is_ready;
@@ -5092,15 +5097,54 @@ void ipa_suspend_apps_pipes(bool suspend)
 {
 	struct ipa_ep_cfg_ctrl cfg;
 	int ipa_ep_idx;
+	u32 lan_empty = 0, wan_empty = 0;
+	int ret;
+	struct sps_event_notify notify;
+	struct ipa_ep_context *ep;
 
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.ipa_ep_suspend = suspend;
 
 	ipa_ep_idx = ipa_get_ep_mapping(IPA_CLIENT_APPS_LAN_CONS);
-	if (ipa_ctx->ep[ipa_ep_idx].valid)
-		ipa_cfg_ep_ctrl(ipa_ep_idx, &cfg);
+	ep = &ipa_ctx->ep[ipa_ep_idx];
+	if (ep->valid) {
+		ipa2_cfg_ep_ctrl(ipa_ep_idx, &cfg);
+		/* Check if the pipes are empty. */
+		ret = sps_is_pipe_empty(ep->ep_hdl, &lan_empty);
+		if (ret) {
+			IPAERR("%s: sps_is_pipe_empty failed with %d\n",
+				__func__, ret);
+		}
+		if (!lan_empty) {
+			IPADBG("LAN Cons is not-empty. Enter poll mode.\n");
+			notify.user = ep->sys;
+			notify.event_id = SPS_EVENT_EOT;
+			if (ep->sys->sps_callback)
+				ep->sys->sps_callback(&notify);
+		}
+	}
 
 	ipa_ep_idx = ipa_get_ep_mapping(IPA_CLIENT_APPS_WAN_CONS);
-	if (ipa_ctx->ep[ipa_ep_idx].valid)
-		ipa_cfg_ep_ctrl(ipa_ep_idx, &cfg);
+	/* Considering the case for SSR. */
+	if (ipa_ep_idx == -1) {
+		IPADBG("Invalid client.\n");
+		return;
+	}
+	ep = &ipa_ctx->ep[ipa_ep_idx];
+	if (ep->valid) {
+		ipa2_cfg_ep_ctrl(ipa_ep_idx, &cfg);
+		/* Check if the pipes are empty. */
+		ret = sps_is_pipe_empty(ep->ep_hdl, &wan_empty);
+		if (ret) {
+			IPAERR("%s: sps_is_pipe_empty failed with %d\n",
+				__func__, ret);
+		}
+		if (!wan_empty) {
+			IPADBG("WAN Cons is not-empty. Enter poll mode.\n");
+			notify.user = ep->sys;
+			notify.event_id = SPS_EVENT_EOT;
+			if (ep->sys->sps_callback)
+				ep->sys->sps_callback(&notify);
+		}
+	}
 }

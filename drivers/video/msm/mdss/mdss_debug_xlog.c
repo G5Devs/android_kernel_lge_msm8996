@@ -25,15 +25,33 @@
 #ifdef CONFIG_FB_MSM_MDSS_XLOG_DEBUG
 #define XLOG_DEFAULT_ENABLE 1
 #else
-#define XLOG_DEFAULT_ENABLE 0
+#define XLOG_DEFAULT_ENABLE 1
 #endif
 
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
 #define XLOG_DEFAULT_PANIC 1
+#define XLOG_DEFAULT_REGDUMP_ENABLE 1
+#else
+#define XLOG_DEFAULT_PANIC 1
+#endif
+
 #define XLOG_DEFAULT_REGDUMP 0x2 /* dump in RAM */
 #define XLOG_DEFAULT_DBGBUSDUMP 0x2 /* dump in RAM */
 #define XLOG_DEFAULT_VBIF_DBGBUSDUMP 0x2 /* dump in RAM */
 
-#define MDSS_XLOG_ENTRY	256
+/*
+ * xlog will print this number of entries when it is called through
+ * sysfs node or panic. This prevents kernel log from xlog message
+ * flood.
+ */
+#define MDSS_XLOG_PRINT_ENTRY	256
+
+/*
+ * xlog keeps this number of entries in memory for debug purpose. This
+ * number must be greater than print entry to prevent out of bound xlog
+ * entry array access.
+ */
+#define MDSS_XLOG_ENTRY	(MDSS_XLOG_PRINT_ENTRY * 4)
 #define MDSS_XLOG_MAX_DATA 15
 #define MDSS_XLOG_BUF_MAX 512
 #define MDSS_XLOG_BUF_ALIGN 32
@@ -41,6 +59,7 @@
 DEFINE_SPINLOCK(xlock);
 
 struct tlog {
+	u32 counter;
 	s64 time;
 	const char *name;
 	int line;
@@ -53,6 +72,7 @@ struct mdss_dbg_xlog {
 	struct tlog logs[MDSS_XLOG_ENTRY];
 	u32 first;
 	u32 last;
+	u32 curr;
 	struct dentry *xlog;
 	u32 xlog_enable;
 	u32 panic_on_err;
@@ -69,6 +89,10 @@ struct mdss_dbg_xlog {
 	u32 *nrt_vbif_dbgbus_dump; /* address for the nrt vbif debug bus dump */
 } mdss_dbg_xlog;
 
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+unsigned int reg_dump_enable;
+#endif
+
 static inline bool mdss_xlog_is_enabled(u32 flag)
 {
 	return (flag & mdss_dbg_xlog.xlog_enable) ||
@@ -82,13 +106,11 @@ void mdss_xlog(const char *name, int line, int flag, ...)
 	va_list args;
 	struct tlog *log;
 
-
 	if (!mdss_xlog_is_enabled(flag))
 		return;
 
 	spin_lock_irqsave(&xlock, flags);
-
-	log = &mdss_dbg_xlog.logs[mdss_dbg_xlog.last % MDSS_XLOG_ENTRY];
+	log = &mdss_dbg_xlog.logs[mdss_dbg_xlog.curr];
 	log->time = ktime_to_us(ktime_get());
 	log->name = name;
 	log->line = line;
@@ -106,7 +128,7 @@ void mdss_xlog(const char *name, int line, int flag, ...)
 	}
 	va_end(args);
 	log->data_cnt = i;
-
+	mdss_dbg_xlog.curr = (mdss_dbg_xlog.curr + 1) % MDSS_XLOG_ENTRY;
 	mdss_dbg_xlog.last++;
 
 	spin_unlock_irqrestore(&xlock, flags);
@@ -135,12 +157,11 @@ static bool __mdss_xlog_dump_calc_range(void)
 			xlog->last += MDSS_XLOG_ENTRY;
 	}
 
-	if ((xlog->last - xlog->first) > MDSS_XLOG_ENTRY) {
+	if ((xlog->last - xlog->first) > MDSS_XLOG_PRINT_ENTRY) {
 		pr_warn("xlog buffer overflow before dump: %d\n",
 			xlog->last - xlog->first);
-		xlog->first = xlog->last - MDSS_XLOG_ENTRY;
+		xlog->first = xlog->last - MDSS_XLOG_PRINT_ENTRY;
 	}
-	need_dump = true;
 	next = xlog->first + 1;
 
 dump_exit:
@@ -299,11 +320,15 @@ static void __vbif_debug_bus(struct vbif_debug_bus *head,
 			/* make sure that test point is enabled */
 			wmb();
 			val = readl_relaxed(vbif_base + MMSS_VBIF_TEST_BUS_OUT);
-			if (dump_addr)
+			if (dump_addr) {
+				*dump_addr++ = head->block_bus_addr;
+				*dump_addr++ = i;
+				*dump_addr++ = j;
 				*dump_addr++ = val;
+			}
 			if (in_log)
-				pr_err("arb/xin id=%d index=%d val=0x%x\n",
-					i, j, val);
+				pr_err("testpoint:%x arb/xin id=%d index=%d val=0x%x\n",
+					head->block_bus_addr, i, j, val);
 		}
 	}
 }
@@ -343,8 +368,8 @@ static void mdss_dump_vbif_debug_bus(u32 bus_dump_flag,
 		list_size += (head->block_cnt * head->test_pnt_cnt);
 	}
 
-	/* will keep in 4 bytes each entry*/
-	list_size *= 4;
+	/* 4 bytes * 4 entries for each test point*/
+	list_size *= 16;
 
 	in_log = (bus_dump_flag & MDSS_DBG_DUMP_IN_LOG);
 	in_mem = (bus_dump_flag & MDSS_DBG_DUMP_IN_MEM);
@@ -381,7 +406,7 @@ static void mdss_dump_vbif_debug_bus(u32 bus_dump_flag,
 		wmb();
 
 		__vbif_debug_bus(head, vbif_base, dump_addr, in_log);
-		dump_addr += (head->block_cnt * head->test_pnt_cnt);
+		dump_addr += (head->block_cnt * head->test_pnt_cnt * 4);
 	}
 
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF);
@@ -498,7 +523,7 @@ static void mdss_dump_reg_by_blk(const char *blk_name)
 		return;
 
 	list_for_each_entry_safe(blk_base, tmp, &mdd->base_list, head) {
-		if (blk_base->name &&
+		if (strlen(blk_base->name) &&
 			!strcmp(blk_base->name, blk_name)) {
 			mdss_dump_reg_by_ranges(blk_base,
 				mdss_dbg_xlog.enable_reg_dump);
@@ -517,7 +542,7 @@ static void mdss_dump_reg_all(void)
 		return;
 
 	list_for_each_entry_safe(blk_base, tmp, &mdd->base_list, head) {
-		if (blk_base->name)
+		if (strlen(blk_base->name))
 			mdss_dump_reg_by_blk(blk_base->name);
 	}
 }
@@ -541,7 +566,7 @@ struct mdss_debug_base *get_dump_blk_addr(const char *blk_name)
 		return NULL;
 
 	list_for_each_entry_safe(blk_base, tmp, &mdd->base_list, head) {
-		if (blk_base->name &&
+		if (strlen(blk_base->name) &&
 			!strcmp(blk_base->name, blk_name))
 				return blk_base;
 	}
@@ -589,6 +614,10 @@ static void xlog_debug_work(struct work_struct *work)
 		mdss_dbg_xlog.work_vbif_dbgbus);
 }
 
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+extern int panel_not_connected;
+#endif
+
 void mdss_xlog_tout_handler_default(bool queue, const char *name, ...)
 {
 	int i, index = 0;
@@ -599,6 +628,16 @@ void mdss_xlog_tout_handler_default(bool queue, const char *name, ...)
 	struct mdss_debug_base *blk_base = NULL;
 	struct mdss_debug_base **blk_arr;
 	u32 blk_len;
+
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+	if(!reg_dump_enable)
+		return;
+
+	if(panel_not_connected) {
+		pr_debug("[%s] reg-dump skipped \n", __func__);
+		return;
+	}
+#endif
 
 	if (!mdss_xlog_is_enabled(MDSS_XLOG_DEFAULT))
 		return;
@@ -692,6 +731,8 @@ static const struct file_operations mdss_xlog_fops = {
 
 int mdss_create_xlog_debug(struct mdss_debug_data *mdd)
 {
+	int i;
+
 	mdss_dbg_xlog.xlog = debugfs_create_dir("xlog", mdd->root);
 	if (IS_ERR_OR_NULL(mdss_dbg_xlog.xlog)) {
 		pr_err("debugfs_create_dir fail, error %ld\n",
@@ -702,6 +743,9 @@ int mdss_create_xlog_debug(struct mdss_debug_data *mdd)
 
 	INIT_WORK(&mdss_dbg_xlog.xlog_dump_work, xlog_debug_work);
 	mdss_dbg_xlog.work_panic = false;
+
+	for (i = 0; i < MDSS_XLOG_ENTRY; i++)
+		mdss_dbg_xlog.logs[i].counter = i;
 
 	debugfs_create_file("dump", 0644, mdss_dbg_xlog.xlog, NULL,
 						&mdss_xlog_fops);
@@ -715,6 +759,13 @@ int mdss_create_xlog_debug(struct mdss_debug_data *mdd)
 			    &mdss_dbg_xlog.enable_dbgbus_dump);
 	debugfs_create_u32("vbif_dbgbus_dump", 0644, mdss_dbg_xlog.xlog,
 			    &mdss_dbg_xlog.enable_vbif_dbgbus_dump);
+
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+	debugfs_create_bool("reg_dump_enable", 0644, mdss_dbg_xlog.xlog,
+				&reg_dump_enable);
+
+	reg_dump_enable = XLOG_DEFAULT_REGDUMP_ENABLE;
+#endif
 
 	mdss_dbg_xlog.xlog_enable = XLOG_DEFAULT_ENABLE;
 	mdss_dbg_xlog.panic_on_err = XLOG_DEFAULT_PANIC;

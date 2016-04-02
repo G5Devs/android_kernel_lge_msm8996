@@ -23,7 +23,12 @@
 		(id & ISP_NATIVE_BUF_BIT) ? MSM_ISP_BUFFER_SRC_NATIVE : \
 				MSM_ISP_BUFFER_SRC_HAL)
 
-#define ISP_SHARE_BUF_CLIENT 2
+/*
+ * This mask can be set dynamically if there are more than 2 VFE
+ *.and 2 of those are used
+ */
+#define ISP_SHARE_BUF_MASK 0x3
+#define ISP_NUM_BUF_MASK 2
 #define BUF_MGR_NUM_BUF_Q 28
 #define MAX_IOMMU_CTX 2
 
@@ -44,6 +49,15 @@ enum msm_isp_buffer_state {
 	MSM_ISP_BUFFER_STATE_DEQUEUED,       /* in use in VFE */
 	MSM_ISP_BUFFER_STATE_DIVERTED,       /* Sent to other hardware*/
 	MSM_ISP_BUFFER_STATE_DISPATCHED,     /* Sent to HAL*/
+};
+
+enum msm_isp_buffer_put_state {
+	MSM_ISP_BUFFER_STATE_PUT_PREPARED,  /* on init */
+	MSM_ISP_BUFFER_STATE_PUT_BUF,       /* on rotation */
+	MSM_ISP_BUFFER_STATE_FLUSH,         /* on recovery */
+	MSM_ISP_BUFFER_STATE_DROP_REG,      /* on drop frame for reg_update */
+	MSM_ISP_BUFFER_STATE_DROP_SKIP,      /* on drop frame for sw skip */
+	MSM_ISP_BUFFER_STATE_RETURN_EMPTY,  /* for return empty */
 };
 
 enum msm_isp_buffer_flush_t {
@@ -67,6 +81,11 @@ struct buffer_cmd {
 	struct msm_isp_buffer_mapped_info *mapped_info;
 };
 
+struct msm_isp_buffer_debug_t {
+	enum msm_isp_buffer_put_state put_state[2];
+	uint8_t put_state_last;
+};
+
 struct msm_isp_buffer {
 	/*Common Data structure*/
 	int num_planes;
@@ -75,20 +94,17 @@ struct msm_isp_buffer {
 	uint32_t bufq_handle;
 	uint32_t frame_id;
 	struct timeval *tv;
+	/* Indicates whether buffer is used as ping ot pong buffer */
+	uint32_t pingpong_bit;
 
 	/*Native buffer*/
 	struct list_head list;
 	enum msm_isp_buffer_state state;
 
+	struct msm_isp_buffer_debug_t buf_debug;
+
 	/*Vb2 buffer data*/
 	struct vb2_buffer *vb2_buf;
-
-	/*Share buffer cache state*/
-	struct list_head share_list;
-	uint8_t buf_used[ISP_SHARE_BUF_CLIENT];
-	uint8_t buf_get_count;
-	uint8_t buf_put_count;
-	uint8_t buf_reuse_flag;
 };
 
 struct msm_isp_bufq {
@@ -99,12 +115,9 @@ struct msm_isp_bufq {
 	enum msm_isp_buf_type buf_type;
 	struct msm_isp_buffer *bufs;
 	spinlock_t bufq_lock;
-
+	uint8_t put_buf_mask[ISP_NUM_BUF_MASK];
 	/*Native buffer queue*/
 	struct list_head head;
-	/*Share buffer cache queue*/
-	struct list_head share_head;
-	uint8_t buf_client_count;
 };
 
 struct msm_isp_buf_ops {
@@ -127,25 +140,27 @@ struct msm_isp_buf_ops {
 		uint32_t bufq_handle, uint32_t *buf_src);
 
 	int (*get_buf)(struct msm_isp_buf_mgr *buf_mgr, uint32_t id,
-		uint32_t bufq_handle, struct msm_isp_buffer **buf_info,
-		uint32_t *buf_cnt);
+		uint32_t bufq_handle, struct msm_isp_buffer **buf_info);
 
 	int (*get_buf_by_index)(struct msm_isp_buf_mgr *buf_mgr,
 		uint32_t bufq_handle, uint32_t buf_index,
 		struct msm_isp_buffer **buf_info);
 
+	int (*map_buf)(struct msm_isp_buf_mgr *buf_mgr,
+		struct msm_isp_buffer_mapped_info *mapped_info, uint32_t fd);
+
+	int (*unmap_buf)(struct msm_isp_buf_mgr *buf_mgr, uint32_t fd);
+
 	int (*put_buf)(struct msm_isp_buf_mgr *buf_mgr,
 		uint32_t bufq_handle, uint32_t buf_index);
 
-	int (*flush_buf)(struct msm_isp_buf_mgr *buf_mgr,
-		uint32_t bufq_handle, enum msm_isp_buffer_flush_t flush_type);
+	int (*flush_buf)(struct msm_isp_buf_mgr *buf_mgr, uint32_t id,
+	uint32_t bufq_handle, enum msm_isp_buffer_flush_t flush_type,
+	struct timeval *tv, uint32_t frame_id);
 
 	int (*buf_done)(struct msm_isp_buf_mgr *buf_mgr,
 		uint32_t bufq_handle, uint32_t buf_index,
 		struct timeval *tv, uint32_t frame_id, uint32_t output_format);
-	int (*buf_divert)(struct msm_isp_buf_mgr *buf_mgr,
-		uint32_t bufq_handle, uint32_t buf_index,
-		struct timeval *tv, uint32_t frame_id);
 	void (*register_ctx)(struct msm_isp_buf_mgr *buf_mgr,
 		struct device **iommu_ctx1, struct device **iommu_ctx2,
 		int num_iommu_ctx1, int num_iommu_ctx2);
@@ -157,8 +172,8 @@ struct msm_isp_buf_ops {
 	struct msm_isp_bufq * (*get_bufq)(struct msm_isp_buf_mgr *buf_mgr,
 		uint32_t bufq_handle);
 	int (*update_put_buf_cnt)(struct msm_isp_buf_mgr *buf_mgr,
-		uint32_t bufq_handle, uint32_t buf_index,
-		uint32_t frame_id);
+	uint32_t id, uint32_t bufq_handle, int32_t buf_index,
+	struct timeval *tv, uint32_t frame_id, uint32_t pingpong_bit);
 };
 
 struct msm_isp_buf_mgr {

@@ -789,6 +789,7 @@ static int mdss_mdp_writeback_display(struct mdss_mdp_ctl *ctl, void *arg)
 	flush_bits |= BIT(16); /* WB */
 	mdp_wb_write(ctx, MDSS_MDP_REG_WB_DST_ADDR_SW_STATUS, ctl->is_secure);
 	mdss_mdp_ctl_write(ctl, MDSS_MDP_REG_CTL_FLUSH, flush_bits);
+	MDSS_XLOG(ctl->intf_num, flush_bits);
 
 	reinit_completion(&ctx->wb_comp);
 	mdss_mdp_irq_enable(ctx->intr_type, ctx->intf_num);
@@ -847,7 +848,13 @@ int mdss_mdp_writeback_start(struct mdss_mdp_ctl *ctl)
 
 	if (mdss_mdp_is_cdm_supported(ctl->mdata, ctl->intf_type,
 				mixer_type)) {
+#ifdef QCT_MM_NOC_PATCH
+		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON);
 		ctl->cdm = mdss_mdp_cdm_init(ctl, MDP_CDM_CDWN_OUTPUT_WB);
+		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF);
+#else
+		ctl->cdm = mdss_mdp_cdm_init(ctl, MDP_CDM_CDWN_OUTPUT_WB);
+#endif
 		if (IS_ERR_OR_NULL(ctl->cdm)) {
 			pr_err("%s failed to init cdm\n", __func__);
 			return -EBUSY;

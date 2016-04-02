@@ -35,6 +35,17 @@
 #define MDSS_PINCTRL_STATE_DEFAULT "mdss_default"
 #define MDSS_PINCTRL_STATE_SLEEP  "mdss_sleep"
 
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+enum mdss_mdp_clk_type {
+	MDSS_CLK_AHB,
+	MDSS_CLK_AXI,
+	MDSS_CLK_MDP_SRC,
+	MDSS_CLK_MDP_CORE,
+	MDSS_CLK_MDP_LUT,
+	MDSS_CLK_MDP_VSYNC,
+	MDSS_MAX_CLK
+};
+#else
 enum mdss_mdp_clk_type {
 	MDSS_CLK_AHB,
 	MDSS_CLK_AXI,
@@ -43,6 +54,7 @@ enum mdss_mdp_clk_type {
 	MDSS_CLK_MDP_VSYNC,
 	MDSS_MAX_CLK
 };
+#endif
 
 enum mdss_iommu_domain_type {
 	MDSS_IOMMU_DOMAIN_UNSECURE,
@@ -153,6 +165,8 @@ enum mdss_hw_quirk {
 	MDSS_QUIRK_BWCPANIC,
 	MDSS_QUIRK_ROTCDP,
 	MDSS_QUIRK_DOWNSCALE_HANG,
+	MDSS_QUIRK_DSC_RIGHT_ONLY_PU,
+	MDSS_QUIRK_DSC_2SLICE_PU_THRPUT,
 	MDSS_QUIRK_MAX,
 };
 
@@ -263,8 +277,10 @@ struct mdss_data_type {
 	u32 default_robust_lut;
 
 	/* values used when HW has panic/robust LUTs per pipe */
-	u32 default_panic_lut_per_pipe;
-	u32 default_robust_lut_per_pipe;
+	u32 default_panic_lut_per_pipe_linear;
+	u32 default_panic_lut_per_pipe_tile;
+	u32 default_robust_lut_per_pipe_linear;
+	u32 default_robust_lut_per_pipe_tile;
 
 	u32 has_decimation;
 	bool has_fixed_qos_arbiter_enabled;
@@ -300,6 +316,7 @@ struct mdss_data_type {
 	u32 smp_mb_cnt;
 	u32 smp_mb_size;
 	u32 smp_mb_per_pipe;
+	u32 pixel_ram_size;
 
 	u32 rot_block_size;
 
@@ -444,6 +461,16 @@ struct mdss_data_type {
 	u32 bcolor0;
 	u32 bcolor1;
 	u32 bcolor2;
+#ifdef CONFIG_LGE_VSYNC_SKIP
+	char enable_skip_vsync;
+	ulong skip_value;
+	ulong weight;
+	ulong bucket;
+	ulong skip_count;
+	int skip_ratio;
+	bool skip_first;
+	unsigned int interval_min_fps;
+#endif
 };
 extern struct mdss_data_type *mdss_res;
 
@@ -479,13 +506,19 @@ struct mdss_util_intf {
 	int (*get_iommu_domain)(u32 type);
 	int (*iommu_attached)(void);
 	int (*iommu_ctrl)(int enable);
+	void (*iommu_lock)(void);
+	void (*iommu_unlock)(void);
 	void (*bus_bandwidth_ctrl)(int enable);
 	int (*bus_scale_set_quota)(int client, u64 ab_quota, u64 ib_quota);
+	int (*panel_intf_status)(u32 disp_num, u32 intf_type);
 	struct mdss_panel_cfg* (*panel_intf_type)(int intf_val);
 };
 
 struct mdss_util_intf *mdss_get_util_intf(void);
-
+#define QCT_IRQ_NOC_PATCH
+#ifdef QCT_IRQ_NOC_PATCH
+bool mdss_get_irq_enable_state(struct mdss_hw *hw);
+#endif
 static inline int mdss_get_sd_client_cnt(void)
 {
 	if (!mdss_res)

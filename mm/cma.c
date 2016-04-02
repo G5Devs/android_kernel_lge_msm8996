@@ -33,6 +33,7 @@
 #include <linux/log2.h>
 #include <linux/cma.h>
 #include <linux/highmem.h>
+#include <linux/delay.h>
 
 struct cma {
 	unsigned long	base_pfn;
@@ -338,17 +339,18 @@ err:
  * This function allocates part of contiguous memory on specific
  * contiguous memory area.
  */
-struct page *cma_alloc(struct cma *cma, int count, unsigned int align)
+struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 {
 	unsigned long mask, pfn, start = 0;
 	unsigned long bitmap_maxno, bitmap_no, bitmap_count;
 	struct page *page = NULL;
 	int ret;
+	int retry_after_sleep = 0;
 
 	if (!cma || !cma->count)
 		return NULL;
 
-	pr_debug("%s(cma %p, count %d, align %d)\n", __func__, (void *)cma,
+	pr_debug("%s(cma %p, count %zu, align %d)\n", __func__, (void *)cma,
 		 count, align);
 
 	if (!count)
@@ -363,8 +365,24 @@ struct page *cma_alloc(struct cma *cma, int count, unsigned int align)
 		bitmap_no = bitmap_find_next_zero_area(cma->bitmap,
 				bitmap_maxno, start, bitmap_count, mask);
 		if (bitmap_no >= bitmap_maxno) {
-			mutex_unlock(&cma->lock);
-			break;
+			if (retry_after_sleep < 2) {
+				start = 0;
+				pr_debug("%s: Memory range busy," "retry after sleep\n", __func__);
+				/*
+				* Page may be momentarily pinned by some other
+				* process which has been scheduled out, eg.
+				* in exit path or during unmap call,and so
+				* cannot be freed there. Sleep for 100ms and
+				* retry twice to see if it has been freed later.
+				*/
+				mutex_unlock(&cma->lock);
+				msleep(100);
+				retry_after_sleep++;
+				continue;
+			} else {
+				mutex_unlock(&cma->lock);
+				break;
+			}
 		}
 		bitmap_set(cma->bitmap, bitmap_no, bitmap_count);
 		/*

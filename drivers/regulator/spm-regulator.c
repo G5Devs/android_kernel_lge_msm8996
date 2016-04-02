@@ -28,6 +28,12 @@
 #include <linux/regulator/spm-regulator.h>
 #include <soc/qcom/spm.h>
 
+#if defined(CONFIG_ARM64) || (defined(CONFIG_ARM) && defined(CONFIG_ARM_PSCI))
+	asmlinkage int __invoke_psci_fn_smc(u64, u64, u64, u64);
+#else
+	#define __invoke_psci_fn_smc(a, b, c, d) 0
+#endif
+
 #define SPM_REGULATOR_DRIVER_NAME "qcom,spm-regulator"
 
 struct voltage_range {
@@ -126,6 +132,7 @@ struct spm_vreg {
 	bool				online;
 	u16				spmi_base_addr;
 	u8				init_mode;
+	u8				mode;
 	int				step_rate;
 	enum qpnp_regulator_uniq_type	regulator_type;
 	u32				cpu_num;
@@ -135,6 +142,7 @@ struct spm_vreg {
 	int				avs_min_uV;
 	int				avs_max_uV;
 	bool				avs_enabled;
+	u32				recal_cluster_mask;
 };
 
 static inline bool spm_regulator_using_avs(struct spm_vreg *vreg)
@@ -289,6 +297,22 @@ static int spm_regulator_write_voltage(struct spm_vreg *vreg, int uV)
 	return rc;
 }
 
+static int spm_regulator_recalibrate(struct spm_vreg *vreg)
+{
+	int rc;
+
+	if (!vreg->recal_cluster_mask)
+		return 0;
+
+	rc = __invoke_psci_fn_smc(0xC4000020, vreg->recal_cluster_mask,
+				  2, 0);
+	if (rc)
+		pr_err("%s: recalibration failed, rc=%d\n", vreg->rdesc.name,
+			rc);
+
+	return rc;
+}
+
 static int _spm_regulator_set_voltage(struct regulator_dev *rdev)
 {
 	struct spm_vreg *vreg = rdev_get_drvdata(rdev);
@@ -332,6 +356,8 @@ static int _spm_regulator_set_voltage(struct regulator_dev *rdev)
 		if (rc)
 			return rc;
 	}
+
+	rc = spm_regulator_recalibrate(vreg);
 
 	return rc;
 }
@@ -413,10 +439,36 @@ static int spm_regulator_is_enabled(struct regulator_dev *rdev)
 	return vreg->online;
 }
 
+static unsigned int spm_regulator_get_mode(struct regulator_dev *rdev)
+{
+	struct spm_vreg *vreg = rdev_get_drvdata(rdev);
+
+	return vreg->mode == QPNP_SMPS_MODE_PWM
+			? REGULATOR_MODE_NORMAL : REGULATOR_MODE_IDLE;
+}
+
+static int spm_regulator_set_mode(struct regulator_dev *rdev, unsigned int mode)
+{
+	struct spm_vreg *vreg = rdev_get_drvdata(rdev);
+
+	/*
+	 * Map REGULATOR_MODE_NORMAL to PWM mode and REGULATOR_MODE_IDLE to
+	 * init_mode.  This ensures that the regulator always stays in PWM mode
+	 * in the case that qcom,mode has been specified as "pwm" in device
+	 * tree.
+	 */
+	vreg->mode
+	 = mode == REGULATOR_MODE_NORMAL ? QPNP_SMPS_MODE_PWM : vreg->init_mode;
+
+	return qpnp_smps_set_mode(vreg, vreg->mode);
+}
+
 static struct regulator_ops spm_regulator_ops = {
 	.get_voltage	= spm_regulator_get_voltage,
 	.set_voltage	= spm_regulator_set_voltage,
 	.list_voltage	= spm_regulator_list_voltage,
+	.get_mode	= spm_regulator_get_mode,
+	.set_mode	= spm_regulator_set_mode,
 	.enable		= spm_regulator_enable,
 	.disable	= spm_regulator_disable,
 	.is_enabled	= spm_regulator_is_enabled,
@@ -689,6 +741,8 @@ static int qpnp_smps_init_mode(struct spm_vreg *vreg)
 				__func__, rc);
 	}
 
+	vreg->mode = vreg->init_mode;
+
 	return rc;
 }
 
@@ -855,6 +909,9 @@ static int spm_regulator_probe(struct spmi_device *spmi)
 	of_property_read_u32(vreg->spmi_dev->dev.of_node, "qcom,cpu-num",
 						&vreg->cpu_num);
 
+	of_property_read_u32(vreg->spmi_dev->dev.of_node, "qcom,recal-mask",
+						&vreg->recal_cluster_mask);
+
 	/*
 	 * The regulator must be initialized to range 0 or range 1 during
 	 * PMIC power on sequence.  Once it is set, it cannot be changed
@@ -891,7 +948,9 @@ static int spm_regulator_probe(struct spmi_device *spmi)
 	}
 	init_data->constraints.input_uV = init_data->constraints.max_uV;
 	init_data->constraints.valid_ops_mask |= REGULATOR_CHANGE_STATUS
-						| REGULATOR_CHANGE_VOLTAGE;
+			| REGULATOR_CHANGE_VOLTAGE | REGULATOR_CHANGE_MODE;
+	init_data->constraints.valid_modes_mask
+				= REGULATOR_MODE_NORMAL | REGULATOR_MODE_IDLE;
 
 	if (!init_data->constraints.name) {
 		dev_err(&spmi->dev, "%s: node is missing regulator name\n",

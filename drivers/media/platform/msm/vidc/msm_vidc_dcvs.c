@@ -28,8 +28,14 @@ static inline int msm_dcvs_get_mbs_per_frame(struct msm_vidc_inst *inst)
 {
 	int height, width;
 
-	height = inst->prop.height[CAPTURE_PORT];
-	width = inst->prop.width[CAPTURE_PORT];
+	if (!inst->in_reconfig) {
+		height = inst->prop.height[CAPTURE_PORT];
+		width = inst->prop.width[CAPTURE_PORT];
+	} else {
+		height = inst->reconfig_height;
+		width = inst->reconfig_width;
+	}
+
 	return NUM_MBS_PER_FRAME(height, width);
 }
 
@@ -45,7 +51,7 @@ static inline int msm_dcvs_count_active_instances(struct msm_vidc_core *core)
 
 	mutex_lock(&core->lock);
 	list_for_each_entry(inst, &core->instances, list) {
-		if (inst->state >= MSM_VIDC_START_DONE &&
+		if (inst->state >= MSM_VIDC_OPEN_DONE &&
 			inst->state < MSM_VIDC_STOP_DONE)
 			active_instances++;
 	}
@@ -126,19 +132,8 @@ static inline int get_pending_bufs_fw(struct msm_vidc_inst *inst)
 
 	if (inst->state >= MSM_VIDC_OPEN_DONE &&
 		inst->state < MSM_VIDC_STOP_DONE) {
-		struct buffer_info *temp = NULL;
-
 		fw_out_qsize = inst->count.ftb - inst->count.fbd;
-
-		mutex_lock(&inst->registeredbufs.lock);
-		list_for_each_entry(temp, &inst->registeredbufs.list, list) {
-			if (temp->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
-				!temp->inactive &&
-				atomic_read(&temp->ref_count) == 2) {
-				buffers_in_driver++;
-			}
-		}
-		mutex_unlock(&inst->registeredbufs.lock);
+		buffers_in_driver = inst->buffers_held_in_driver;
 	}
 
 	return fw_out_qsize + buffers_in_driver;
@@ -218,7 +213,8 @@ void msm_dcvs_init_load(struct msm_vidc_inst *inst)
 	/* calculating the min and max threshold */
 	if (output_buf_req->buffer_count_actual) {
 		dcvs->min_threshold = output_buf_req->buffer_count_actual -
-			output_buf_req->buffer_count_min + 1;
+			output_buf_req->buffer_count_min -
+			msm_dcvs_get_extra_buff_count(inst) + 1;
 		dcvs->max_threshold = output_buf_req->buffer_count_actual;
 		if (dcvs->max_threshold <= dcvs->min_threshold)
 			dcvs->max_threshold =

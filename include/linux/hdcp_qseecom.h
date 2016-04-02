@@ -23,6 +23,7 @@ enum hdcp_lib_wakeup_cmd {
 	HDCP_LIB_WKUP_CMD_MSG_RECV_SUCCESS,
 	HDCP_LIB_WKUP_CMD_MSG_RECV_FAILED,
 	HDCP_LIB_WKUP_CMD_MSG_RECV_TIMEOUT,
+	HDCP_LIB_WKUP_CMD_QUERY_STREAM_TYPE,
 };
 
 enum hdmi_hdcp_wakeup_cmd {
@@ -85,6 +86,8 @@ static inline char *hdcp_lib_cmd_to_str(uint32_t cmd)
 		return "HDCP_LIB_WKUP_CMD_MSG_RECV_FAILED";
 	case HDCP_LIB_WKUP_CMD_MSG_RECV_TIMEOUT:
 		return "HDCP_LIB_WKUP_CMD_MSG_RECV_TIMEOUT";
+	case HDCP_LIB_WKUP_CMD_QUERY_STREAM_TYPE:
+		return "HDCP_LIB_WKUP_CMD_QUERY_STREAM_TYPE";
 	default:
 		return "???";
 	}
@@ -93,20 +96,27 @@ static inline char *hdcp_lib_cmd_to_str(uint32_t cmd)
 struct hdcp_txmtr_ops {
 	int (*wakeup)(struct hdcp_lib_wakeup_data *data);
 	bool (*feature_supported)(void *phdcpcontext);
-
+	void (*update_exec_type)(void *ctx, bool tethered);
 	int (*hdcp_txmtr_get_state)(void *phdcpcontext,
 		uint32_t *state);
-	int (*hdcp_query_stream_type)(void *phdcpcontext);
 };
 
 struct hdcp_client_ops {
 	int (*wakeup)(struct hdmi_hdcp_wakeup_data *data);
 };
 
-int hdcp_library_register(void **pphdcpcontext,
-	struct hdcp_client_ops *client_ops,
-	struct hdcp_txmtr_ops *txmtr_ops, void *client_ctx);
+struct hdcp_register_data {
+	struct hdcp_client_ops *client_ops;
+	struct hdcp_txmtr_ops *txmtr_ops;
+	void *client_ctx;
+	void **hdcp_ctx;
+	bool tethered;
+};
+
+int hdcp_library_register(struct hdcp_register_data *data);
 void hdcp_library_deregister(void *phdcpcontext);
+bool hdcp1_check_if_supported_load_app(void);
 int hdcp1_set_keys(uint32_t *aksv_msb, uint32_t *aksv_lsb);
+int hdcp1_set_enc(bool enable);
 
 #endif /* __HDCP_QSEECOM_H */

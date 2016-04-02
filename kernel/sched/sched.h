@@ -660,6 +660,7 @@ struct rq {
 	u64 irqload_ts;
 	unsigned int static_cpu_pwr_cost;
 	unsigned int static_cluster_pwr_cost;
+	struct task_struct *ed_task;
 
 #ifdef CONFIG_SCHED_FREQ_INPUT
 	unsigned int old_busy_time;
@@ -934,7 +935,6 @@ extern void sched_account_irqtime(int cpu, struct task_struct *curr,
 unsigned int cpu_temp(int cpu);
 extern unsigned int nr_eligible_big_tasks(int cpu);
 extern void update_up_down_migrate(void);
-extern int power_delta_exceeded(unsigned int cpu_cost, unsigned int base_cost);
 
 /*
  * 'load' is in reference to "best cpu" at its best frequency.
@@ -1202,6 +1202,9 @@ static inline void clear_reserved(int cpu) { }
 #define power_cost(...) 0
 
 #define trace_sched_cpu_load(...)
+#define trace_sched_cpu_load_lb(...)
+#define trace_sched_cpu_load_cgroup(...)
+#define trace_sched_cpu_load_wakeup(...)
 
 #endif /* CONFIG_SCHED_HMP */
 

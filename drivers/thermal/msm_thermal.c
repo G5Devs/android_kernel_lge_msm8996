@@ -10,7 +10,6 @@
  * GNU General Public License for more details.
  *
  */
-
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
 
 #include <linux/kernel.h>
@@ -49,6 +48,10 @@
 #include <linux/suspend.h>
 #include <linux/uaccess.h>
 #include <linux/uio_driver.h>
+
+#ifdef CONFIG_LGE_HANDLE_PANIC
+#include <soc/qcom/lge/lge_handle_panic.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #define TRACE_MSM_THERMAL
@@ -117,9 +120,17 @@
 		} \
 	} while (0)
 
+#ifdef CONFIG_LGE_PM
+#define IS_IN_BIG_CLUSTER(cpu) ((cpu < 2) ? 0 : 1)
+#endif
+
 static struct msm_thermal_data msm_thermal_info;
 static struct delayed_work check_temp_work, retry_hotplug_work;
 static bool core_control_enabled;
+#ifdef CONFIG_LGE_PM
+static bool core_control_force_mode;
+static bool freq_control_enabled;
+#endif
 static uint32_t cpus_offlined;
 static cpumask_var_t cpus_previously_online;
 static DEFINE_MUTEX(core_control_mutex);
@@ -179,7 +190,6 @@ static DEFINE_MUTEX(gfx_mutex);
 static DEFINE_MUTEX(ocr_mutex);
 static DEFINE_MUTEX(vdd_mx_mutex);
 static DEFINE_MUTEX(threshold_mutex);
-static uint32_t min_freq_limit;
 static uint32_t curr_gfx_band;
 static uint32_t curr_cx_band;
 static struct kobj_attribute cx_mode_attr;
@@ -235,6 +245,7 @@ struct cpu_info {
 	uint32_t user_max_freq;
 	uint32_t shutdown_max_freq;
 	uint32_t suspend_max_freq;
+	uint32_t vdd_max_freq;
 	uint32_t user_min_freq;
 	uint32_t limited_max_freq;
 	uint32_t limited_min_freq;
@@ -243,16 +254,19 @@ struct cpu_info {
 };
 
 struct rail {
-	const char *name;
-	uint32_t freq_req;
-	uint32_t min_level;
-	uint32_t num_levels;
-	int32_t curr_level;
-	uint32_t levels[3];
-	struct kobj_attribute value_attr;
-	struct kobj_attribute level_attr;
-	struct regulator *reg;
-	struct attribute_group attr_gp;
+	const char			*name;
+	uint32_t			freq_req;
+	uint32_t			min_level;
+	uint32_t			num_levels;
+	int32_t				curr_level;
+	uint32_t			levels[3];
+	struct kobj_attribute		value_attr;
+	struct kobj_attribute		level_attr;
+	struct regulator		*reg;
+	struct attribute_group		attr_gp;
+	uint32_t			max_frequency_limit;
+	struct device_clnt_data		*device_handle[NR_CPUS];
+	union device_request		request[NR_CPUS];
 };
 
 struct msm_sensor_info {
@@ -1567,8 +1581,9 @@ static void do_cluster_freq_ctrl(long temp)
 				, _cpu
 				, cluster_ptr->freq_table[freq_idx].frequency
 				, temp);
-			cpus[_cpu].limited_max_freq =
-				cluster_ptr->freq_table[freq_idx].frequency;
+			cpus[_cpu].limited_max_freq = min(
+				cluster_ptr->freq_table[freq_idx].frequency,
+				cpus[_cpu].vdd_max_freq);
 		}
 	}
 	if (_cpu != -1)
@@ -1635,9 +1650,9 @@ exit:
 	return ret;
 }
 
-static int update_cpu_min_freq_all(uint32_t min)
+static int update_cpu_min_freq_all(struct rail *apss_rail, uint32_t min)
 {
-	uint32_t cpu = 0, _cluster = 0;
+	uint32_t cpu = 0, _cluster = 0, max_freq = UINT_MAX;
 	int ret = 0;
 	struct cluster_info *cluster_ptr = NULL;
 	bool valid_table = false;
@@ -1649,6 +1664,10 @@ static int update_cpu_min_freq_all(uint32_t min)
 			return ret;
 		}
 	}
+	if (min != apss_rail->min_level)
+		max_freq = apss_rail->max_frequency_limit;
+
+	get_online_cpus();
 	/* If min is larger than allowed max */
 	if (core_ptr) {
 		for (; _cluster < core_ptr->entity_count; _cluster++) {
@@ -1659,28 +1678,66 @@ static int update_cpu_min_freq_all(uint32_t min)
 			min = min(min,
 				cluster_ptr->freq_table[
 				cluster_ptr->freq_idx_high].frequency);
+			max_freq = max(max_freq, cluster_ptr->freq_table[
+				cluster_ptr->freq_idx_low].frequency);
 		}
 		if (!valid_table)
-			return ret;
+			goto update_freq_exit;
 	} else {
 		min = min(min, table[limit_idx_high].frequency);
+		max_freq = max(max_freq, table[limit_idx_low].frequency);
 	}
 
-	pr_debug("Requesting min freq:%u for all CPU's\n", min);
+	pr_debug("Requesting min freq:%u max freq:%u for all CPU's\n",
+		min, max_freq);
 	if (freq_mitigation_task) {
-		min_freq_limit = min;
-		complete(&freq_mitigation_complete);
+		if (!apss_rail->device_handle[0]) {
+			pr_err("device manager handle not registered\n");
+			ret = -ENODEV;
+			goto update_freq_exit;
+		}
+		for_each_possible_cpu(cpu) {
+			cpus[cpu].vdd_max_freq = max_freq;
+			apss_rail->request[cpu].freq.max_freq = max_freq;
+			apss_rail->request[cpu].freq.min_freq = min;
+			ret = devmgr_client_request_mitigation(
+				apss_rail->device_handle[cpu],
+				CPUFREQ_MITIGATION_REQ,
+				&apss_rail->request[cpu]);
+		}
+	} else if (core_ptr) {
+		for (_cluster = 0; _cluster < core_ptr->entity_count;
+			_cluster++) {
+			cluster_ptr = &core_ptr->child_entity_ptr[_cluster];
+			if (!cluster_ptr->freq_table)
+				continue;
+			for_each_cpu_mask(cpu, cluster_ptr->cluster_cores) {
+				cpus[cpu].limited_min_freq = min;
+				cpus[cpu].vdd_max_freq = max_freq;
+				cpus[cpu].limited_max_freq = min(
+					cluster_ptr->freq_table[
+					cluster_ptr->freq_idx].frequency,
+					cpus[cpu].vdd_max_freq);
+				if (!SYNC_CORE(cpu))
+					update_cpu_freq(cpu);
+			}
+			update_cluster_freq();
+		}
 	} else {
-		get_online_cpus();
 		for_each_possible_cpu(cpu) {
 			cpus[cpu].limited_min_freq = min;
+			cpus[cpu].vdd_max_freq = max_freq;
+			cpus[cpu].limited_max_freq =
+				min(table[limit_idx].frequency,
+					cpus[cpu].vdd_max_freq);
 			if (!SYNC_CORE(cpu))
 				update_cpu_freq(cpu);
 		}
 		update_cluster_freq();
-		put_online_cpus();
 	}
 
+update_freq_exit:
+	put_online_cpus();
 	return ret;
 }
 
@@ -1693,13 +1750,13 @@ static int vdd_restriction_apply_freq(struct rail *r, int level)
 
 	/* level = -1: disable, level = 0,1,2..n: enable */
 	if (level == -1) {
-		ret = update_cpu_min_freq_all(r->min_level);
+		ret = update_cpu_min_freq_all(r, r->min_level);
 		if (ret)
 			return ret;
 		else
 			r->curr_level = -1;
 	} else if (level >= 0 && level < (r->num_levels)) {
-		ret = update_cpu_min_freq_all(r->levels[level]);
+		ret = update_cpu_min_freq_all(r, r->levels[level]);
 		if (ret)
 			return ret;
 		else
@@ -2000,7 +2057,7 @@ static ssize_t vdd_rstr_reg_level_store(struct kobject *kobj,
 
 	if (val != reg->curr_level) {
 		if (reg->freq_req == 1 && freq_table_get)
-			update_cpu_min_freq_all(reg->levels[val]);
+			update_cpu_min_freq_all(reg, reg->levels[val]);
 		else {
 			ret = vdd_restriction_apply_voltage(reg, val);
 			if (ret) {
@@ -2647,6 +2704,11 @@ static void msm_thermal_bite(int zone_id, long temp)
 		pr_err("Tsens:%d reached temperature:%ld. System reset\n",
 			tsens_id, temp);
 	}
+
+#ifdef CONFIG_LGE_HANDLE_PANIC
+	lge_set_restart_reason(LGE_RB_MAGIC | LGE_ERR_TZ | LGE_ERR_TZ_THERM_SEC_BITE);
+#endif
+
 	if (!is_scm_armv8()) {
 		scm_call_atomic1(SCM_SVC_BOOT, THERM_SECURE_BITE_CMD, 0);
 	} else {
@@ -2733,6 +2795,7 @@ static void __ref do_core_control(long temp)
 {
 	int i = 0;
 	int ret = 0;
+	struct device *cpu_dev = NULL;
 
 	if (!core_control_enabled)
 		return;
@@ -2747,15 +2810,22 @@ static void __ref do_core_control(long temp)
 				continue;
 			pr_info("Set Offline: CPU%d Temp: %ld\n",
 					i, temp);
+			lock_device_hotplug();
 			if (cpu_online(i)) {
+				cpu_dev = get_cpu_device(i);
+#ifdef CONFIG_LGE_PM
+				if (!cpu_dev)
+					continue;
+#endif
 				trace_thermal_pre_core_offline(i);
-				ret = cpu_down(i);
+				ret = device_offline(cpu_dev);
 				if (ret)
 					pr_err("Error %d offline core %d\n",
 					       ret, i);
 				trace_thermal_post_core_offline(i,
 					cpumask_test_cpu(i, cpu_online_mask));
 			}
+			unlock_device_hotplug();
 			cpus_offlined |= BIT(i);
 			break;
 		}
@@ -2772,19 +2842,30 @@ static void __ref do_core_control(long temp)
 			 * If this core is already online, then bring up the
 			 * next offlined core.
 			 */
-			if (cpu_online(i))
+			lock_device_hotplug();
+			if (cpu_online(i)) {
+				unlock_device_hotplug();
 				continue;
+			}
 			/* If this core wasn't previously online don't put it
 			   online */
-			if (!(cpumask_test_cpu(i, cpus_previously_online)))
+			if (!(cpumask_test_cpu(i, cpus_previously_online))) {
+				unlock_device_hotplug();
 				continue;
+			}
+			cpu_dev = get_cpu_device(i);
+#ifdef CONFIG_LGE_PM
+			if (!cpu_dev)
+				continue;
+#endif
 			trace_thermal_pre_core_online(i);
-			ret = cpu_up(i);
+			ret = device_online(cpu_dev);
 			if (ret)
 				pr_err("Error %d online core %d\n",
 						ret, i);
 			trace_thermal_post_core_online(i,
 				cpumask_test_cpu(i, cpu_online_mask));
+			unlock_device_hotplug();
 			break;
 		}
 	}
@@ -2797,19 +2878,33 @@ static int __ref update_offline_cores(int val)
 	int ret = 0;
 	uint32_t previous_cpus_offlined = 0;
 	bool pend_hotplug_req = false;
+	struct device *cpu_dev = NULL;
 
 	if (!core_control_enabled)
 		return 0;
 
 	previous_cpus_offlined = cpus_offlined;
 	cpus_offlined = msm_thermal_info.core_control_mask & val;
+	pr_info("Offlined CPU mask changed %u to %u\n",
+				previous_cpus_offlined,
+				cpus_offlined);
 
 	for_each_possible_cpu(cpu) {
 		if (cpus_offlined & BIT(cpu)) {
-			if (!cpu_online(cpu))
+			lock_device_hotplug();
+			if (!cpu_online(cpu)) {
+				unlock_device_hotplug();
 				continue;
+			}
+			cpu_dev = get_cpu_device(cpu);
+#ifdef CONFIG_LGE_PM
+			if (!cpu_dev) {
+				unlock_device_hotplug();
+				continue;
+			}
+#endif
 			trace_thermal_pre_core_offline(cpu);
-			ret = cpu_down(cpu);
+			ret = device_offline(cpu_dev);
 			if (ret) {
 				pr_err_ratelimited(
 					"Unable to offline CPU%d. err:%d\n",
@@ -2820,15 +2915,28 @@ static int __ref update_offline_cores(int val)
 			}
 			trace_thermal_post_core_offline(cpu,
 				cpumask_test_cpu(cpu, cpu_online_mask));
+			unlock_device_hotplug();
 		} else if (online_core && (previous_cpus_offlined & BIT(cpu))) {
-			if (cpu_online(cpu))
+			lock_device_hotplug();
+			if (cpu_online(cpu)) {
+				unlock_device_hotplug();
 				continue;
+			}
 			/* If this core wasn't previously online don't put it
 			   online */
-			if (!(cpumask_test_cpu(cpu, cpus_previously_online)))
+			if (!(cpumask_test_cpu(cpu, cpus_previously_online))) {
+				unlock_device_hotplug();
 				continue;
+			}
+			cpu_dev = get_cpu_device(cpu);
+#ifdef CONFIG_LGE_PM
+			if (!cpu_dev) {
+				unlock_device_hotplug();
+				continue;
+			}
+#endif
 			trace_thermal_pre_core_online(cpu);
-			ret = cpu_up(cpu);
+			ret = device_online(cpu_dev);
 			if (ret && ret == notifier_to_errno(NOTIFY_BAD)) {
 				pr_debug("Onlining CPU%d is vetoed\n", cpu);
 			} else if (ret) {
@@ -2842,6 +2950,7 @@ static int __ref update_offline_cores(int val)
 				trace_thermal_post_core_online(cpu,
 					cpumask_test_cpu(cpu, cpu_online_mask));
 			}
+			unlock_device_hotplug();
 		}
 	}
 
@@ -2890,6 +2999,12 @@ static __ref int do_hotplug(void *data)
 			if (cpus[cpu].offline || cpus[cpu].user_offline)
 				mask |= BIT(cpu);
 		}
+#ifdef CONFIG_LGE_PM
+		if (core_control_force_mode) {
+			mask &= ~(1 << 0); /* first of silver */
+			mask &= ~(1 << 2); /* first of gold */
+		}
+#endif
 		if (devices && devices->hotplug_dev) {
 			mutex_lock(&devices->hotplug_dev->clnt_lock);
 			for_each_cpu_mask(cpu,
@@ -3155,7 +3270,6 @@ static int do_vdd_restriction(void)
 		if (check_freq_table() && !core_ptr)
 			return ret;
 	}
-
 	mutex_lock(&vdd_rstr_mutex);
 	for (i = 0; i < thresh[MSM_VDD_RESTRICTION].thresh_ct; i++) {
 		ret = therm_get_temp(
@@ -3268,31 +3382,31 @@ static void do_freq_control(long temp)
 		limit_idx -= msm_thermal_info.bootup_freq_step;
 		if (limit_idx < limit_idx_low)
 			limit_idx = limit_idx_low;
-		max_freq = table[limit_idx].frequency;
 	} else if (temp < msm_thermal_info.limit_temp_degC -
 		 msm_thermal_info.temp_hysteresis_degC) {
 		if (limit_idx == limit_idx_high)
 			return;
 
 		limit_idx += msm_thermal_info.bootup_freq_step;
-		if (limit_idx >= limit_idx_high) {
+		if (limit_idx >= limit_idx_high)
 			limit_idx = limit_idx_high;
-			max_freq = UINT_MAX;
-		} else
-			max_freq = table[limit_idx].frequency;
 	}
-
-	if (max_freq == cpus[cpu].limited_max_freq)
-		return;
 
 	/* Update new limits */
 	get_online_cpus();
+	max_freq = table[limit_idx].frequency;
+	if (max_freq == cpus[cpu].limited_max_freq) {
+		put_online_cpus();
+		return;
+	}
+
 	for_each_possible_cpu(cpu) {
 		if (!(msm_thermal_info.bootup_freq_control_mask & BIT(cpu)))
 			continue;
 		pr_info("Limiting CPU%d max frequency to %u. Temp:%ld\n",
 			cpu, max_freq, temp);
-		cpus[cpu].limited_max_freq = max_freq;
+		cpus[cpu].limited_max_freq =
+				min(max_freq, cpus[cpu].vdd_max_freq);
 		if (!SYNC_CORE(cpu))
 			update_cpu_freq(cpu);
 	}
@@ -3415,12 +3529,23 @@ static int hotplug_init_cpu_offlined(void)
 			mutex_unlock(&core_control_mutex);
 			return -EINVAL;
 		}
-
+#ifdef CONFIG_LGE_PM
+		if (IS_IN_BIG_CLUSTER(cpu)) {
+		if (temp >= msm_thermal_info.big_hotplug_temp_degC)
+			cpus[cpu].offline = 1;
+		else if (temp <= (msm_thermal_info.big_hotplug_temp_degC -
+			msm_thermal_info.big_hotplug_temp_hysteresis_degC))
+			cpus[cpu].offline = 0;
+		} else {
+#endif
 		if (temp >= msm_thermal_info.hotplug_temp_degC)
 			cpus[cpu].offline = 1;
 		else if (temp <= (msm_thermal_info.hotplug_temp_degC -
 			msm_thermal_info.hotplug_temp_hysteresis_degC))
 			cpus[cpu].offline = 0;
+#ifdef CONFIG_LGE_PM
+		}
+#endif
 	}
 	mutex_unlock(&core_control_mutex);
 
@@ -3453,6 +3578,17 @@ static void hotplug_init(void)
 
 		hi_thresh = &cpus[cpu].threshold[HOTPLUG_THRESHOLD_HIGH];
 		low_thresh = &cpus[cpu].threshold[HOTPLUG_THRESHOLD_LOW];
+#ifdef CONFIG_LGE_PM
+		if (IS_IN_BIG_CLUSTER(cpu)) {
+		hi_thresh->temp = (msm_thermal_info.big_hotplug_temp_degC)
+				* tsens_scaling_factor;
+		hi_thresh->trip = THERMAL_TRIP_CONFIGURABLE_HI;
+		low_thresh->temp = (msm_thermal_info.big_hotplug_temp_degC -
+			msm_thermal_info.big_hotplug_temp_hysteresis_degC)
+				* tsens_scaling_factor;
+		low_thresh->trip = THERMAL_TRIP_CONFIGURABLE_LOW;
+		} else {
+#endif
 		hi_thresh->temp = (msm_thermal_info.hotplug_temp_degC)
 				* tsens_scaling_factor;
 		hi_thresh->trip = THERMAL_TRIP_CONFIGURABLE_HI;
@@ -3460,6 +3596,9 @@ static void hotplug_init(void)
 				msm_thermal_info.hotplug_temp_hysteresis_degC)
 				* tsens_scaling_factor;
 		low_thresh->trip = THERMAL_TRIP_CONFIGURABLE_LOW;
+#ifdef CONFIG_LGE_PM
+		}
+#endif
 		hi_thresh->notify = low_thresh->notify = hotplug_notify;
 		hi_thresh->data = low_thresh->data = (void *)&cpus[cpu];
 
@@ -3509,16 +3648,13 @@ static __ref int do_freq_mitigation(void *data)
 			max_freq_req = min(max_freq_req,
 					cpus[cpu].suspend_max_freq);
 
-			min_freq_req = max(min_freq_limit,
-					cpus[cpu].user_min_freq);
-
 			if (devices && devices->cpufreq_dev[cpu]) {
 				cpu_dev = devices->cpufreq_dev[cpu];
 				mutex_lock(&cpu_dev->clnt_lock);
 				max_freq_req = min(max_freq_req,
 					cpu_dev->active_req.freq.max_freq);
-				min_freq_req = max(min_freq_req,
-					cpu_dev->active_req.freq.min_freq);
+				min_freq_req =
+					cpu_dev->active_req.freq.min_freq;
 				mutex_unlock(&cpu_dev->clnt_lock);
 			}
 
@@ -3529,8 +3665,11 @@ static __ref int do_freq_mitigation(void *data)
 
 			cpus[cpu].limited_max_freq = max_freq_req;
 			cpus[cpu].limited_min_freq = min_freq_req;
-			if (!SYNC_CORE(cpu))
+			if (!SYNC_CORE(cpu)) {
+				get_online_cpus();
 				update_cpu_freq(cpu);
+				put_online_cpus();
+			}
 reset_threshold:
 			if (!SYNC_CORE(cpu) &&
 				devices && devices->cpufreq_dev[cpu]) {
@@ -3564,7 +3703,9 @@ reset_threshold:
 				cpus[cpu].freq_thresh_clear = false;
 			}
 		}
+		get_online_cpus();
 		update_cluster_freq();
+		put_online_cpus();
 	}
 	return ret;
 }
@@ -3580,6 +3721,13 @@ static int freq_mitigation_notify(enum thermal_trip_type type,
 	if (!(msm_thermal_info.freq_mitig_control_mask &
 		BIT(cpu_node->cpu)))
 		return 0;
+
+#ifdef CONFIG_LGE_PM
+	if (!freq_control_enabled) {
+		pr_debug("freq mitigation is blocked");
+		return 0;
+	}
+#endif
 
 	switch (type) {
 	case THERMAL_TRIP_CONFIGURABLE_HI:
@@ -3722,6 +3870,13 @@ int msm_thermal_get_cluster_voltage_plan(uint32_t cluster, uint32_t *table_ptr)
 	}
 
 	cpu_dev = get_cpu_device(first_cpu(cluster_ptr->cluster_cores));
+#ifdef CONFIG_LGE_PM
+	if (!cpu_dev) {
+		pr_err("Fail to get cpu_dev.\n");
+		return -ENODEV;
+	}
+#endif
+
 	table_len =  cluster_ptr->freq_idx_high + 1;
 
 	rcu_read_lock();
@@ -4163,6 +4318,53 @@ static __ref int do_thermal_monitor(void *data)
 	return ret;
 }
 
+static int vdd_rstr_apss_freq_dev_init(void)
+{
+	int idx = 0, ret = 0;
+	char device_str[DEVM_NAME_MAX] = "";
+	struct rail *r = NULL;
+
+	for (idx = 0; idx < rails_cnt; idx++) {
+		if (rails[idx].freq_req) {
+			r = &rails[idx];
+			break;
+		}
+	}
+	if (!r) {
+		pr_err("APSS rail not initialized\n");
+		return -ENODEV;
+	}
+
+	for_each_possible_cpu(idx) {
+		if (r->device_handle[idx])
+			continue;
+		snprintf(device_str, DEVM_NAME_MAX, CPU_DEVICE, idx);
+		r->device_handle[idx]
+			= devmgr_register_mitigation_client(
+				&msm_thermal_info.pdev->dev,
+				device_str, NULL);
+		if (IS_ERR(r->device_handle[idx])) {
+			ret = PTR_ERR(r->device_handle[idx]);
+			pr_err("Error registering %s handle. err:%d\n",
+				device_str, ret);
+			goto freq_init_exit;
+		}
+		r->request[idx].freq.max_freq = CPUFREQ_MAX_NO_MITIGATION;
+		r->request[idx].freq.min_freq = CPUFREQ_MIN_NO_MITIGATION;
+	}
+
+freq_init_exit:
+	if (ret) {
+		for_each_possible_cpu(idx) {
+			devmgr_unregister_mitigation_client(
+				&msm_thermal_info.pdev->dev,
+				r->device_handle[idx]);
+			r->device_handle[idx] = NULL;
+		}
+	}
+	return ret;
+}
+
 static int convert_to_zone_id(struct threshold_info *thresh_inp)
 {
 	int ret = 0, i, zone_id;
@@ -4237,9 +4439,12 @@ static void thermal_monitor_init(void)
 		!(convert_to_zone_id(&thresh[MSM_CX_PHASE_CTRL_HOT])))
 		therm_set_threshold(&thresh[MSM_CX_PHASE_CTRL_HOT]);
 
-	if ((vdd_rstr_enabled) &&
-		!(convert_to_zone_id(&thresh[MSM_VDD_RESTRICTION])))
-		therm_set_threshold(&thresh[MSM_VDD_RESTRICTION]);
+	if (vdd_rstr_enabled) {
+		if (vdd_rstr_apss_freq_dev_init())
+			pr_err("vdd APSS mitigation device init failed\n");
+		else if (!(convert_to_zone_id(&thresh[MSM_VDD_RESTRICTION])))
+			therm_set_threshold(&thresh[MSM_VDD_RESTRICTION]);
+	}
 
 	if ((gfx_warm_phase_ctrl_enabled) &&
 		!(convert_to_zone_id(&thresh[MSM_GFX_PHASE_CTRL_WARM]))) {
@@ -4499,6 +4704,7 @@ static void __ref disable_msm_thermal(void)
 			continue;
 		pr_info("Max frequency reset for CPU%d\n", cpu);
 		cpus[cpu].limited_max_freq = UINT_MAX;
+		cpus[cpu].vdd_max_freq = UINT_MAX;
 		cpus[cpu].limited_min_freq = 0;
 		if (!SYNC_CORE(cpu))
 			update_cpu_freq(cpu);
@@ -4514,7 +4720,6 @@ static void interrupt_mode_init(void)
 		return;
 	}
 	if (polling_enabled) {
-		pr_info("Interrupt mode init\n");
 		polling_enabled = 0;
 		create_sensor_zone_id_map();
 		disable_msm_thermal();
@@ -4608,6 +4813,39 @@ done_store_cc:
 	return count;
 }
 
+#ifdef CONFIG_LGE_PM
+static ssize_t show_fm_enabled(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", freq_control_enabled);
+}
+
+static ssize_t __ref store_fm_enabled(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int ret = 0;
+	int val = 0;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret) {
+		pr_err("Invalid input %s. err:%d\n", buf, ret);
+		goto done_store_fm;
+	}
+
+	if (freq_control_enabled == !!val)
+		goto done_store_fm;
+
+	freq_control_enabled = !!val;
+	if (freq_control_enabled)
+		pr_info("Freq-mitigation enabled\n");
+	else
+		pr_info("Freq-mitigation disabled\n");
+
+done_store_fm:
+	return count;
+}
+#endif
+
 static ssize_t show_cpus_offlined(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
@@ -4658,11 +4896,41 @@ done_cc:
 static __refdata struct kobj_attribute cc_enabled_attr =
 __ATTR(enabled, 0644, show_cc_enabled, store_cc_enabled);
 
+#ifdef CONFIG_LGE_PM
+static ssize_t __ref store_force_unmask(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int ret, val;
+	mutex_lock(&core_control_mutex);
+	ret = kstrtouint(buf, 10, &val);
+	if (ret) {
+		pr_err("Invalid input %s. err: %d\n", buf, ret);
+		mutex_unlock(&core_control_mutex);
+		return ret;
+	}
+	core_control_force_mode = !!val ? 1 : 0;
+	if (hotplug_task)
+		complete(&hotplug_notify_complete);
+	else
+		pr_err("Hotplug task is not initialized\n");
+	mutex_unlock(&core_control_mutex);
+	return count;
+}
+static __refdata struct kobj_attribute cc_force_attr =
+__ATTR(force_unmask, 0200, NULL, store_force_unmask);
+static __refdata struct kobj_attribute fm_enabled_attr =
+__ATTR(freq_control_enabled, 0644, show_fm_enabled, store_fm_enabled);
+#endif
+
 static __refdata struct kobj_attribute cpus_offlined_attr =
 __ATTR(cpus_offlined, 0644, show_cpus_offlined, store_cpus_offlined);
 
 static __refdata struct attribute *cc_attrs[] = {
 	&cc_enabled_attr.attr,
+#ifdef CONFIG_LGE_PM
+	&cc_force_attr.attr,
+	&fm_enabled_attr.attr,
+#endif
 	&cpus_offlined_attr.attr,
 	NULL,
 };
@@ -5714,9 +5982,16 @@ static int probe_vdd_rstr(struct device_node *node,
 
 		key = "qcom,freq-req";
 		rails[i].freq_req = of_property_read_bool(child_node, key);
-		if (rails[i].freq_req)
+		if (rails[i].freq_req) {
 			rails[i].min_level = 0;
-		else {
+			key = "qcom,max-freq-level";
+			ret = of_property_read_u32(child_node, key,
+				&rails[i].max_frequency_limit);
+			if (ret)
+				rails[i].max_frequency_limit
+					= UINT_MAX;
+			ret = 0;
+		} else {
 			key = "qcom,min-level";
 			ret = of_property_read_u32(child_node, key,
 				&rails[i].min_level);
@@ -6184,6 +6459,9 @@ static int probe_cc(struct device_node *node, struct msm_thermal_data *data,
 	if (num_possible_cpus() > 1) {
 		core_control_enabled = 1;
 		hotplug_enabled = 1;
+#ifdef CONFIG_LGE_PM
+		core_control_force_mode = 0;
+#endif
 	}
 
 	key = "qcom,core-limit-temp";
@@ -6207,6 +6485,18 @@ static int probe_cc(struct device_node *node, struct msm_thermal_data *data,
 	if (ret)
 		goto hotplug_node_fail;
 
+#ifdef CONFIG_LGE_PM
+	key = "qcom,big-hotplug-temp";
+	ret = of_property_read_u32(node, key, &data->big_hotplug_temp_degC);
+	if (ret)
+		goto hotplug_node_fail;
+
+	key = "qcom,big-hotplug-temp-hysteresis";
+	ret = of_property_read_u32(node, key,
+			&data->big_hotplug_temp_hysteresis_degC);
+	if (ret)
+		goto hotplug_node_fail;
+#endif
 read_node_fail:
 	if (ret) {
 		dev_info(&pdev->dev,
@@ -6471,6 +6761,9 @@ static int probe_freq_mitigation(struct device_node *node,
 		goto PROBE_FREQ_EXIT;
 
 	freq_mitigation_enabled = 1;
+#ifdef CONFIG_LGE_PM
+	freq_control_enabled = 1;
+#endif
 	snprintf(mit_config[MSM_LIST_MAX_NR + CPUFREQ_CONFIG].config_name,
 		MAX_DEBUGFS_CONFIG_LEN, "cpufreq");
 	mit_config[MSM_LIST_MAX_NR + CPUFREQ_CONFIG].disable_config
@@ -6917,6 +7210,7 @@ static int msm_thermal_dev_exit(struct platform_device *inp_dev)
 	uint32_t _cluster = 0;
 	struct cluster_info *cluster_ptr = NULL;
 	struct uio_info *info = dev_get_drvdata(&inp_dev->dev);
+	struct rail *r = NULL;
 
 	uio_unregister_device(info);
 	unregister_reboot_notifier(&msm_thermal_reboot_notifier);
@@ -6928,6 +7222,17 @@ static int msm_thermal_dev_exit(struct platform_device *inp_dev)
 			sensor_mgr_remove_threshold(
 				&thresh[MSM_VDD_RESTRICTION]);
 			kfree(thresh[MSM_VDD_RESTRICTION].thresh_list);
+			for (i = 0; i < rails_cnt; i++) {
+				if (!rails[i].freq_req)
+					continue;
+				r = &rails[i];
+				for_each_possible_cpu(i) {
+					devmgr_unregister_mitigation_client(
+						&msm_thermal_info.pdev->dev,
+						r->device_handle[i]);
+					r->device_handle[i] = NULL;
+				}
+			}
 		}
 		if (cx_phase_ctrl_enabled) {
 			sensor_mgr_remove_threshold(

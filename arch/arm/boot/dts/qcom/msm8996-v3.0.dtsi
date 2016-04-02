@@ -24,6 +24,8 @@
 &gfx_cpr {
 	system-supply = <&pm8994_s1_corner>;
 	qcom,cpr-enable;
+
+	/delete-property/ qcom,cpr-aging-ref-voltage;
 };
 
 &gfx_vreg {
@@ -44,6 +46,7 @@
 		 520000  520000>;
 
 	qcom,system-voltage = <2 2 2 2 2 4 4>;
+	qcom,mem-acc-voltage = <1 1 1 2 2 2 2>;
 
 	qcom,corner-frequencies =
 		<0 214000000 315000000 401800000
@@ -91,25 +94,32 @@
 		<       0        0        0        0>,
 		<       0        0        0        0>;
 	qcom,cpr-closed-loop-voltage-adjustment =
-		<    0 10000 35000 35000 45000 25000 10000>,
-		<    0 10000 35000 35000 45000 25000 10000>,
-		<    0 10000 35000 35000 45000 25000 10000>,
-		<    0 10000 35000 35000 45000 25000 10000>,
-		<    0 10000 35000 35000 45000 25000 10000>,
-		<    0 10000 35000 35000 45000 25000 10000>,
-		<    0 10000 35000 35000 45000 25000 10000>,
-		<    0 10000 35000 35000 45000 25000 10000>;
+		<    0 (-5000) 20000 20000 30000 10000 (-5000)>,
+		<    0 (-5000) 20000 20000 30000 10000 (-5000)>,
+		<    0  60000  40000 40000 45000 25000  35000>,
+		<    0  30000  10000 10000 45000 25000  25000>,
+		<    0  30000  10000 10000 45000 25000  25000>,
+		<    0  30000  10000 10000 45000 25000  25000>,
+		<    0  30000  10000 10000 45000 25000  25000>,
+		<    0  30000  10000 10000 45000 25000  25000>;
 	qcom,cpr-floor-to-ceiling-max-range =
 	       <0 70000 75000 80000 90000 95000 100000>;
 
+	/delete-property/ qcom,cpr-fused-closed-loop-voltage-adjustment-map;
+
 	qcom,allow-voltage-interpolation;
 	qcom,cpr-scaled-open-loop-voltage-as-ceiling;
+
+	/delete-property/ qcom,cpr-aging-max-voltage-adjustment;
+	/delete-property/ qcom,cpr-aging-ref-corner;
+	/delete-property/ qcom,cpr-aging-ro-scaling-factor;
+	/delete-property/ qcom,allow-aging-voltage-adjustment;
 };
 
 &clock_gpu {
 	compatible = "qcom,gpucc-8996-v3.0";
 	qcom,gfx3d_clk_src_v2-opp-handle = <&msm_gpu>;
-	qcom,gfxfreq-corner-v2 =
+	qcom,gfxfreq-speedbin0 =
 		<	   0  0  0 >,
 		<  133000000  3  4 >,
 		<  214000000  3  4 >,

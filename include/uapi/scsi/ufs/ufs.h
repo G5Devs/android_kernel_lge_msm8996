@@ -14,6 +14,9 @@ enum flag_idn {
 	QUERY_FLAG_IDN_RESERVED2		= 0x07,
 	QUERY_FLAG_IDN_FPHYRESOURCEREMOVAL      = 0x08,
 	QUERY_FLAG_IDN_BUSY_RTC			= 0x09,
+#ifdef CONFIG_UFS_LGE_FEATURE
+    QUERY_FLAG_IDN_PERMANENT_DIS_FWUPT      = 0x0B,
+#endif
 };
 
 /* Attribute idn for Query requests */
@@ -37,6 +40,8 @@ enum attr_idn {
 	QUERY_ATTR_IDN_CNTX_CONF		= 0x10,
 	QUERY_ATTR_IDN_CORR_PRG_BLK_NUM		= 0x11,
 };
+
+#define QUERY_ATTR_IDN_BOOT_LU_EN_MAX	0x02
 
 /* Descriptor idn for Query requests */
 enum desc_idn {

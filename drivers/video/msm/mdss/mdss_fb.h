@@ -232,7 +232,7 @@ struct msm_mdp_interface {
 	int (*configure_panel)(struct msm_fb_data_type *mfd, int mode,
 				int dest_ctrl);
 	int (*input_event_handler)(struct msm_fb_data_type *mfd);
-	int (*ad_shutdown_cleanup)(struct msm_fb_data_type *mfd);
+	int (*pp_release_fnc)(struct msm_fb_data_type *mfd);
 	void *private1;
 };
 
@@ -252,6 +252,15 @@ struct msm_fb_backup_type {
 	struct mdp_display_commit disp_commit;
 	bool   atomic_commit;
 };
+
+#if defined(CONFIG_LGE_PP_AD_SUPPORTED)
+struct msm_fb_ad_info {
+    int is_ad_on;
+    int user_bl_lvl;
+    int ad_weight;
+    int old_ad_brightness;
+};
+#endif
 
 struct msm_fb_data_type {
 	u32 key;
@@ -304,7 +313,14 @@ struct msm_fb_data_type {
 	u32 bl_updated;
 	u32 bl_level_scaled;
 	struct mutex bl_lock;
+	bool ipc_resume;
 
+#if defined(CONFIG_LGE_DISPLAY_AOD_SUPPORTED)
+	struct mutex aod_lock;
+#endif
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+	bool recovery;
+#endif
 	struct platform_device *pdev;
 
 	u32 mdp_fb_page_protection;
@@ -357,6 +373,13 @@ struct msm_fb_data_type {
 	bool pending_switch;
 	struct mutex switch_lock;
 	struct input_handler *input_handler;
+	#if defined(CONFIG_LGE_PP_AD_SUPPORTED)
+	struct msm_fb_ad_info ad_info;
+	#endif
+#if defined(CONFIG_LGE_PM_THERMAL_VTS)
+	struct value_sensor *vs;
+	struct value_sensor *vs_clone;
+#endif
 };
 
 static inline void mdss_fb_update_notify_update(struct msm_fb_data_type *mfd)
@@ -381,9 +404,7 @@ static inline void mdss_fb_update_notify_update(struct msm_fb_data_type *mfd)
 /* Function returns true for either any kind of dual display */
 static inline bool is_panel_split(struct msm_fb_data_type *mfd)
 {
-	return mfd &&
-	       (mfd->split_mode == MDP_DUAL_LM_DUAL_DISPLAY ||
-		mfd->split_mode == MDP_PINGPONG_SPLIT);
+	return mfd && mfd->panel_info && mfd->panel_info->is_split_display;
 }
 /* Function returns true, if Layer Mixer split is Set */
 static inline bool is_split_lm(struct msm_fb_data_type *mfd)
@@ -397,7 +418,10 @@ static inline bool is_pingpong_split(struct msm_fb_data_type *mfd)
 {
 	return mfd && (mfd->split_mode == MDP_PINGPONG_SPLIT);
 }
-
+static inline bool is_dual_lm_single_display(struct msm_fb_data_type *mfd)
+{
+	return mfd && (mfd->split_mode == MDP_DUAL_LM_SINGLE_DISPLAY);
+}
 static inline bool mdss_fb_is_power_off(struct msm_fb_data_type *mfd)
 {
 	return mdss_panel_is_power_off(mfd->panel_power_state);
@@ -436,14 +460,16 @@ int mdss_fb_register_mdp_instance(struct msm_mdp_interface *mdp);
 int mdss_fb_dcm(struct msm_fb_data_type *mfd, int req_state);
 int mdss_fb_suspres_panel(struct device *dev, void *data);
 int mdss_fb_do_ioctl(struct fb_info *info, unsigned int cmd,
-		     unsigned long arg);
+		     unsigned long arg, struct file *file);
 int mdss_fb_compat_ioctl(struct fb_info *info, unsigned int cmd,
-			 unsigned long arg);
+			 unsigned long arg, struct file *file);
 int mdss_fb_atomic_commit(struct fb_info *info,
-	struct mdp_layer_commit  *commit);
+	struct mdp_layer_commit  *commit, struct file *file);
 int mdss_fb_async_position_update(struct fb_info *info,
 		struct mdp_position_update *update_pos);
 
 u32 mdss_fb_get_mode_switch(struct msm_fb_data_type *mfd);
 void mdss_fb_report_panel_dead(struct msm_fb_data_type *mfd);
+void mdss_panelinfo_to_fb_var(struct mdss_panel_info *pinfo,
+						struct fb_var_screeninfo *var);
 #endif /* MDSS_FB_H */

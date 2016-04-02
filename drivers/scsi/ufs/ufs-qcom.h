@@ -147,6 +147,9 @@ enum ufs_qcom_phy_init_type {
 	 UFS_QCOM_DBG_PRINT_TEST_BUS_EN)
 
 /* QUniPro Vendor specific attributes */
+#ifdef CONFIG_MACH_LGE
+#define PA_VS_CONFIG_REG1	0x9000
+#endif
 #define DME_VS_CORE_CLK_CTRL	0xD002
 /* bit and mask definitions for DME_VS_CORE_CLK_CTRL attribute */
 #define DME_VS_CORE_CLK_CTRL_CORE_CLK_DIV_EN_BIT		BIT(8)
@@ -209,7 +212,6 @@ struct ufs_qcom_bus_vote {
  */
 struct ufs_qcom_ice_data {
 	struct qcom_ice_variant_ops *vops;
-	struct completion async_done;
 	struct platform_device *pdev;
 	int state;
 
@@ -241,6 +243,9 @@ struct qcom_debugfs_files {
 	struct dentry *testbus_bus;
 	struct dentry *dbg_regs;
 	struct dentry *pm_qos;
+#ifdef CONFIG_UFS_LGE_FEATURE
+    struct dentry *phy_tx_drv_str;
+#endif
 };
 #endif
 

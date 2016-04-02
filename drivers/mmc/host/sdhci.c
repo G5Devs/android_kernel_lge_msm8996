@@ -41,8 +41,8 @@
 #define DBG(f, x...) \
 	pr_debug(DRIVER_NAME " [%s()]: " f, __func__,## x)
 
-#if defined(CONFIG_LEDS_CLASS) || (defined(CONFIG_LEDS_CLASS_MODULE) && \
-	defined(CONFIG_MMC_SDHCI_MODULE))
+#if (defined(CONFIG_LEDS_CLASS) || (defined(CONFIG_LEDS_CLASS_MODULE) && \
+	defined(CONFIG_MMC_SDHCI_MODULE))) && !defined(CONFIG_MACH_LGE)
 #define SDHCI_USE_LEDS_CLASS
 #endif
 
@@ -340,7 +340,7 @@ static void sdhci_reinit(struct sdhci_host *host)
 	}
 	sdhci_enable_card_detection(host);
 }
-
+#if !defined(SDHCI_USE_LEDS_CLASS) && !defined(CONFIG_MACH_LGE)
 static void sdhci_activate_led(struct sdhci_host *host)
 {
 	u8 ctrl;
@@ -358,7 +358,7 @@ static void sdhci_deactivate_led(struct sdhci_host *host)
 	ctrl &= ~SDHCI_CTRL_LED;
 	sdhci_writeb(host, ctrl, SDHCI_HOST_CONTROL);
 }
-
+#endif
 #ifdef SDHCI_USE_LEDS_CLASS
 static void sdhci_led_control(struct led_classdev *led,
 	enum led_brightness brightness)
@@ -1717,7 +1717,7 @@ static void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	WARN_ON(host->mrq != NULL);
 
-#ifndef SDHCI_USE_LEDS_CLASS
+#if !defined(SDHCI_USE_LEDS_CLASS) && !defined(CONFIG_MACH_LGE)
 	if (!(host->quirks2 & SDHCI_QUIRK2_BROKEN_LED_CONTROL))
 		sdhci_activate_led(host);
 #endif
@@ -2608,6 +2608,18 @@ static int sdhci_late_init(struct mmc_host *mmc)
 
 	return 0;
 }
+
+static void sdhci_force_err_irq(struct mmc_host *mmc, u64 errmask)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	u16 mask = errmask & 0xFFFF;
+
+	pr_err("%s: Force raise error mask:0x%04x\n", __func__, mask);
+	sdhci_runtime_pm_get(host);
+	sdhci_writew(host, mask, SDHCI_SET_INT_ERROR);
+	sdhci_runtime_pm_put(host);
+}
+
 static const struct mmc_host_ops sdhci_ops = {
 	.init           = sdhci_late_init,
 	.pre_req	= sdhci_pre_req,
@@ -2628,6 +2640,7 @@ static const struct mmc_host_ops sdhci_ops = {
 	.notify_load	= sdhci_notify_load,
 	.notify_halt	= sdhci_notify_halt,
 	.detect		= sdhci_detect,
+	.force_err_irq	= sdhci_force_err_irq,
 };
 
 /*****************************************************************************\
@@ -2688,7 +2701,7 @@ static void sdhci_tasklet_finish(unsigned long param)
 	host->data = NULL;
 	host->auto_cmd_err_sts = 0;
 
-#ifndef SDHCI_USE_LEDS_CLASS
+#if !defined(SDHCI_USE_LEDS_CLASS) && !defined(CONFIG_MACH_LGE)
 	if (!(host->quirks2 & SDHCI_QUIRK2_BROKEN_LED_CONTROL))
 		sdhci_deactivate_led(host);
 #endif

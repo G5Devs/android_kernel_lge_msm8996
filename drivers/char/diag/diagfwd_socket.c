@@ -655,6 +655,17 @@ void diag_socket_invalidate(void *ctxt, struct diagfwd_info *fwd_ctxt)
 	info->fwd_ctxt = fwd_ctxt;
 }
 
+int diag_socket_check_state(void *ctxt)
+{
+	struct diag_socket_info *info = NULL;
+
+	if (!ctxt)
+		return 0;
+
+	info = (struct diag_socket_info *)ctxt;
+	return (int)(atomic_read(&info->diag_state));
+}
+
 static void __diag_socket_init(struct diag_socket_info *info)
 {
 	uint16_t ins_base = 0;
@@ -930,7 +941,7 @@ static int diag_socket_read(void *ctxt, unsigned char *buf, int buf_len)
 		DIAG_LOG(DIAG_DEBUG_PERIPHERALS,
 			 "%s closing read thread. diag state is closed\n",
 			 info->name);
-		diag_ws_release();
+		diagfwd_channel_read_done(info->fwd_ctxt, buf, 0);
 		return 0;
 	}
 

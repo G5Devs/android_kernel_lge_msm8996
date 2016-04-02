@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -140,6 +140,7 @@ struct msm_vfe_irq_ops {
 	void (*process_stats_irq)(struct vfe_device *vfe_dev,
 		uint32_t irq_status0, uint32_t irq_status1,
 		struct msm_isp_timestamp *ts);
+	void (*enable_camif_err)(struct vfe_device *vfe_dev, int enable);
 };
 
 struct msm_vfe_axi_ops {
@@ -359,15 +360,11 @@ struct msm_vfe_axi_stream {
 	enum msm_vfe_axi_stream_type stream_type;
 	uint32_t frame_based;
 	enum msm_vfe_frame_skip_pattern frame_skip_pattern;
-	uint32_t framedrop_period;
-	uint32_t framedrop_pattern;
-	uint32_t prev_framedrop_period;
-	uint32_t prev_framedrop_pattern;
-	uint32_t framedrop_altern_cnt;
+	uint32_t current_framedrop_period; /* user requested period*/
+	uint32_t requested_framedrop_period; /* requested period*/
+	uint32_t activated_framedrop_period; /* active hw period */
 	uint32_t num_burst_capture;/*number of frame to capture*/
 	uint32_t init_frame_drop;
-	uint32_t burst_frame_count;/*number of sof before burst stop*/
-	uint8_t framedrop_update;
 	spinlock_t lock;
 
 	/*Bandwidth calculation info*/
@@ -376,12 +373,7 @@ struct msm_vfe_axi_stream {
 	uint32_t format_factor;
 	uint32_t bandwidth;
 
-	/*Run time update variables*/
-	uint32_t runtime_init_frame_drop;
-	uint32_t runtime_burst_frame_count;/*number of sof before burst stop*/
 	uint32_t runtime_num_burst_capture;
-	uint8_t  runtime_framedrop_update;
-	uint8_t  runtime_framedrop_update_burst;
 	uint32_t runtime_output_format;
 	enum msm_stream_memory_input_t  memory_input;
 	struct msm_isp_sw_framskip sw_skip;
@@ -423,6 +415,8 @@ struct msm_vfe_fetch_engine_info {
 	uint32_t bufq_handle;
 	uint32_t buf_idx;
 	uint8_t is_busy;
+	uint8_t offline_mode;
+	uint32_t fd;
 };
 
 enum msm_wm_ub_cfg_type {
@@ -504,7 +498,6 @@ struct msm_vfe_tasklet_queue_cmd {
 	uint32_t vfeInterruptStatus1;
 	struct msm_isp_timestamp ts;
 	uint8_t cmd_used;
-	uint8_t iommu_page_fault;
 };
 
 #define MSM_VFE_TASKLETQ_SIZE 200

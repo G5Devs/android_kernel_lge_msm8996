@@ -146,7 +146,7 @@ static struct pll_vote_clk gpll0_ao_clk_src = {
 	.soft_vote_mask = PLL_SOFT_VOTE_ACPU,
 	.base = &virt_bases[GCC_BASE],
 	.c = {
-		.parent = &xo_clk_src.c,
+		.parent = &xo_a_clk_src.c,
 		.rate = 800000000,
 		.dbg_name = "gpll0_ao_clk_src",
 		.ops = &clk_ops_pll_acpu_vote,
@@ -1800,6 +1800,8 @@ static struct clk_lookup msm_clocks_lookup[] = {
 	 CLK_LIST(gcc_usb_hsic_io_cal_clk),
 	 CLK_LIST(gcc_usb_hsic_io_cal_sleep_clk),
 	 CLK_LIST(gcc_usb_hsic_system_clk),
+	 CLK_LIST(gcc_usb2_hs_phy_only_clk),
+	 CLK_LIST(gcc_qusb2_phy_clk),
 };
 
 static int msm_gcc_probe(struct platform_device *pdev)

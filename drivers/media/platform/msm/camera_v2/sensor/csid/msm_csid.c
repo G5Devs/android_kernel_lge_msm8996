@@ -45,7 +45,8 @@
 #define CSID_VERSION_V40                      0x40000000
 #define MSM_CSID_DRV_NAME                    "msm_csid"
 
-#define DBG_CSID                             0
+/* LGE_CHANGE, CST, enabled csid sof debug feature */
+#define DBG_CSID                             1
 #define SHORT_PKT_CAPTURE                    0
 #define SHORT_PKT_OFFSET                     0x200
 #define ENABLE_3P_BIT                        1
@@ -205,8 +206,10 @@ static int msm_csid_reset(struct csid_device *csid_dev)
 	if (rc <= 0) {
 		pr_err("wait_for_completion in msm_csid_reset fail rc = %d\n",
 			rc);
-		if (rc == 0)
-			rc = -ETIMEDOUT;
+		/* LGE_CHANGE_S, QCT W/A patch temporarily for msm_csid_reset failed, 2015-11-05, sunjae.jung@lge.com */
+		//if (rc == 0)
+		//	rc = -ETIMEDOUT;
+		/* LGE_CHANGE_E, QCT W/A patch temporarily for msm_csid_reset failed, 2015-11-05, sunjae.jung@lge.com */
 	}
 	return rc;
 }
@@ -383,6 +386,7 @@ static irqreturn_t msm_csid_irq(int irq_num, void *data)
 	}
 	irq = msm_camera_io_r(csid_dev->base +
 		csid_dev->ctrl_reg->csid_reg.csid_irq_status_addr);
+
 	CDBG("%s CSID%d_IRQ_STATUS_ADDR = 0x%x\n",
 		 __func__, csid_dev->pdev->id, irq);
 	if (irq & (0x1 <<
@@ -415,7 +419,12 @@ static irqreturn_t msm_csid_irq(int irq_num, void *data)
 	}
 	irq = msm_camera_io_r(csid_dev->base +
 		csid_dev->ctrl_reg->csid_reg.csid_irq_status_addr);
-	CDBG("%s CSID%d_IRQ_STATUS_ADDR = 0x%x\n",
+	/* LGE_CHANGE, CST, enabled csid sof debug feature */
+	if (csid_dev->csid_sof_debug == SOF_DEBUG_ENABLE)
+		pr_err("%s CSID%d_IRQ_STATUS_ADDR = 0x%x\n",
+		 __func__, csid_dev->pdev->id, irq);
+	else
+		CDBG("%s CSID%d_IRQ_STATUS_ADDR = 0x%x\n",
 		 __func__, csid_dev->pdev->id, irq);
 	if (irq & (0x1 <<
 		csid_dev->ctrl_reg->csid_reg.csid_rst_done_irq_bitshift))
@@ -680,6 +689,13 @@ static int32_t msm_csid_cmd(struct csid_device *csid_dev, void __user *arg)
 	switch (cdata->cfgtype) {
 	case CSID_INIT:
 		rc = msm_csid_init(csid_dev, &cdata->cfg.csid_version);
+		if (rc == -ETIMEDOUT) {
+			pr_err("%s:%d msm_csid_init timeout retrying",
+				__func__, __LINE__);
+			rc = msm_csid_init(csid_dev, &cdata->cfg.csid_version);
+			if (rc < 0)
+				pr_err("%s:%d fail rc = ", __func__, __LINE__);
+		}
 		CDBG("%s csid version 0x%x\n", __func__,
 			cdata->cfg.csid_version);
 		break;
@@ -812,6 +828,13 @@ static int32_t msm_csid_cmd32(struct csid_device *csid_dev, void __user *arg)
 	switch (cdata->cfgtype) {
 	case CSID_INIT:
 		rc = msm_csid_init(csid_dev, &cdata->cfg.csid_version);
+		if (rc == -ETIMEDOUT) {
+			pr_err("%s:%d msm_csid_init timeout retrying",
+				__func__, __LINE__);
+			rc = msm_csid_init(csid_dev, &cdata->cfg.csid_version);
+			if (rc < 0)
+				pr_err("%s:%d fail rc = ", __func__, __LINE__);
+		}
 		arg32->cfg.csid_version = local_arg.cfg.csid_version;
 		CDBG("%s csid version 0x%x\n", __func__,
 			cdata->cfg.csid_version);

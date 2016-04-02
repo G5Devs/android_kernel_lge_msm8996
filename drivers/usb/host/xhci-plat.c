@@ -64,6 +64,7 @@ static int xhci_plat_start(struct usb_hcd *hcd)
 	return xhci_run(hcd);
 }
 
+#define AUTOSUSPEND_TIMEOUT	5000 /* in milliseconds */
 static int xhci_plat_probe(struct platform_device *pdev)
 {
 	struct device_node	*node = pdev->dev.of_node;
@@ -126,8 +127,8 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	if (pdev->dev.parent)
 		pm_runtime_resume(pdev->dev.parent);
 
+	pm_runtime_set_autosuspend_delay(&pdev->dev, AUTOSUSPEND_TIMEOUT);
 	pm_runtime_use_autosuspend(&pdev->dev);
-	pm_runtime_set_autosuspend_delay(&pdev->dev, 1000);
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
 	pm_runtime_get_sync(&pdev->dev);
@@ -177,6 +178,7 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	if (ret)
 		goto put_usb3_hcd;
 
+	pm_runtime_mark_last_busy(&pdev->dev);
 	pm_runtime_put_autosuspend(&pdev->dev);
 
 	return 0;
@@ -218,34 +220,12 @@ static int xhci_plat_remove(struct platform_device *dev)
 }
 
 #ifdef CONFIG_PM_SLEEP
-static int xhci_plat_suspend(struct device *dev)
-{
-	struct usb_hcd	*hcd = dev_get_drvdata(dev);
-	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-
-	/*
-	 * xhci_suspend() needs `do_wakeup` to know whether host is allowed
-	 * to do wakeup during suspend. Since xhci_plat_suspend is currently
-	 * only designed for system suspend, device_may_wakeup() is enough
-	 * to dertermine whether host is allowed to do wakeup. Need to
-	 * reconsider this when xhci_plat_suspend enlarges its scope, e.g.,
-	 * also applies to runtime suspend.
-	 */
-	return xhci_suspend(xhci, device_may_wakeup(dev));
-}
-
-static int xhci_plat_resume(struct device *dev)
-{
-	struct usb_hcd	*hcd = dev_get_drvdata(dev);
-	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-
-	return xhci_resume(xhci, 0);
-}
-
 #ifdef CONFIG_PM_RUNTIME
 static int xhci_plat_runtime_idle(struct device *dev)
 {
 	if (pm_runtime_autosuspend_expiration(dev)) {
+		/* this shouldn't happen here */
+		dev_err(dev, "xhci-plat runtime idle called: invalid\n");
 		pm_runtime_autosuspend(dev);
 		return -EAGAIN;
 	}
@@ -279,13 +259,14 @@ static int xhci_plat_runtime_resume(struct device *dev)
 
 	ret = xhci_resume(xhci, false);
 	pm_runtime_mark_last_busy(dev);
+	pm_runtime_autosuspend(dev);
 
 	return ret;
 }
 #endif
 
 static const struct dev_pm_ops xhci_plat_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(xhci_plat_suspend, xhci_plat_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(NULL, NULL)
 	SET_RUNTIME_PM_OPS(xhci_plat_runtime_suspend, xhci_plat_runtime_resume,
 			   xhci_plat_runtime_idle)
 };

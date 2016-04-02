@@ -60,6 +60,7 @@ struct cpr3_fuse_param {
  *			when switching to a new corner
  * @system_volt:	The system-supply voltage in microvolts or corners or
  *			levels
+ * @mem_acc_volt:	The mem-acc-supply voltage in corners
  * @proc_freq:		Processor frequency in Hertz (only used by platform
  *			specific CPR3 driver for interpolation)
  * @cpr_fuse_corner:	Fused corner index associated with this virtual corner
@@ -69,9 +70,18 @@ struct cpr3_fuse_param {
  *			oscillator (RO) for this corner.  A value of 0 should be
  *			specified as the target quotient for each RO that is
  *			unused by this corner.
+ * @ro_scale:		Array of CPR ring oscillator (RO) scaling factors.  The
+ *			scaling factor for each RO is defined from RO0 to RO15
+ *			with units of QUOT/V.  A value of 0 may be specified for
+ *			an RO that is unused.
  * @ro_mask:		Bitmap where each of the 16 LSBs indicate if the
  *			corresponding ROs should be masked for this corner
  * @irq_en:		Bitmap of the CPR interrupts to enable for this corner
+ * @aging_derate:	The amount to derate the aging voltage adjustment
+ *			determined for the reference corner in units of uV/mV.
+ *			E.g. a value of 900 would imply that the adjustment for
+ *			this corner should be 90% (900/1000) of that for the
+ *			reference corner.
  *
  * The value of last_volt is initialized inside of the cpr3_regulator_register()
  * call with the open_loop_volt value.  It can later be updated to the settled
@@ -86,11 +96,14 @@ struct cpr3_corner {
 	int			open_loop_volt;
 	int			last_volt;
 	int			system_volt;
+	int			mem_acc_volt;
 	u32			proc_freq;
 	int			cpr_fuse_corner;
 	u32			target_quot[CPR3_RO_COUNT];
+	u32			ro_scale[CPR3_RO_COUNT];
 	u32			ro_mask;
 	u32			irq_en;
+	int			aging_derate;
 };
 
 /**
@@ -105,6 +118,9 @@ struct cpr3_corner {
  * @rdesc:		Regulator description for this CPR3 regulator
  * @rdev:		Regulator device pointer for the regulator registered
  *			for this CPR3 regulator
+ * @mem_acc_regulator:	Pointer to the optional mem-acc supply regulator used
+ *			to manage memory circuitry settings based upon CPR3
+ *			regulator output voltage.
  * @ldo_regulator:	Pointer to the LDO supply regulator used to manage
  *			per-cluster LDO voltage and bypass state
  * @ldo_regulator_bypass: Cached copy of the LDO regulator bypass state
@@ -115,14 +131,30 @@ struct cpr3_corner {
  * @platform_fuses:	Pointer to platform specific CPR fuse data (only used by
  *			platform specific CPR3 driver)
  * @speed_bin_fuse:	Value read from the speed bin fuse parameter
+ * @speed_bins_supported: The number of speed bins supported by the device tree
+ *			configuration for this CPR3 regulator
  * @cpr_rev_fuse:	Value read from the CPR fusing revision fuse parameter
  * @fuse_combo:		Platform specific enum value identifying the specific
  *			combination of fuse values found on a given chip
  * @fuse_combos_supported: The number of fuse combinations supported by the
  *			device tree configuration for this CPR3 regulator
  * @fuse_corner_count:	Number of corners defined by fuse parameters
+ * @fuse_combo_corner_sum: The sum of the corner counts across all fuse combos
+ * @fuse_combo_offset:	The device tree property array offset for the selected
+ *			fuse combo
+ * @speed_bin_corner_sum: The sum of the corner counts across all speed bins
+ *			This may be specified as 0 if per speed bin parsing
+ *			support is not required.
+ * @speed_bin_offset:	The device tree property array offset for the selected
+ *			speed bin
  * @pd_bypass_mask:	Bit mask of power domains associated with this CPR3
  *			regulator
+ * @dynamic_floor_corner: Index identifying the voltage corner for the CPR3
+ *			regulator whose last_volt value should be used as the
+ *			global CPR floor voltage if all of the power domains
+ *			associated with this CPR3 regulator are bypassed
+ * @uses_dynamic_floor: Boolean flag indicating that dynamic_floor_corner should
+ *			be utilized for the CPR3 regulator
  * @current_corner:	Index identifying the currently selected voltage corner
  *			for the CPR3 regulator or less than 0 if no corner has
  *			been requested
@@ -135,9 +167,12 @@ struct cpr3_corner {
  *			participated in the last aggregation event
  * @debug_corner:	Index identifying voltage corner used for displaying
  *			corner configuration values in debugfs
- * @ldo_headroom_volt:	Voltage difference in microvolts required between the
- *			VDD supply voltage and the LDO output in order for the
- *			LDO operate
+ * @ldo_min_headroom_volt: Minimum voltage difference in microvolts required
+ *			between the VDD supply voltage and the LDO output in
+ *			order for the LDO operate
+ * @ldo_max_headroom_volt: Maximum voltage difference in microvolts between
+ *			the input and output of the active LDO hardware to
+ *			maintain optimum operability.
  * @ldo_adjust_volt:	Voltage in microvolts used to offset margin assigned
  *			to IR drop between PMIC and CPU
  * @ldo_ret_volt:	The lowest supported CPU retention voltage in
@@ -149,6 +184,15 @@ struct cpr3_corner {
  *			CPR3 regulator
  * @vreg_enabled:	Boolean defining the enable state of the CPR3
  *			regulator's regulator within the regulator framework.
+ * @aging_allowed:	Boolean defining if CPR aging adjustments are allowed
+ *			for this CPR3 regulator given the fuse combo of the
+ *			device
+ * @aging_corner:	The corner that should be configured for this regulator
+ *			when an aging measurement is performed.
+ * @aging_max_adjust_volt: The maximum aging voltage margin in microvolts that
+ *			may be added to the target quotients of this regulator.
+ *			A value of 0 may be specified if this regulator does not
+ *			require any aging adjustment.
  *
  * This structure contains both configuration and runtime state data.  The
  * elements current_corner, last_closed_loop_corner, aggregated, debug_corner,
@@ -160,6 +204,7 @@ struct cpr3_regulator {
 	const char		*name;
 	struct regulator_desc	rdesc;
 	struct regulator_dev	*rdev;
+	struct regulator	*mem_acc_regulator;
 	struct regulator	*ldo_regulator;
 	bool			ldo_regulator_bypass;
 	struct regulator	*ldo_ret_regulator;
@@ -168,22 +213,34 @@ struct cpr3_regulator {
 
 	void			*platform_fuses;
 	int			speed_bin_fuse;
+	int			speed_bins_supported;
 	int			cpr_rev_fuse;
 	int			fuse_combo;
 	int			fuse_combos_supported;
 	int			fuse_corner_count;
+	int			fuse_combo_corner_sum;
+	int			fuse_combo_offset;
+	int			speed_bin_corner_sum;
+	int			speed_bin_offset;
 	u32			pd_bypass_mask;
+	int			dynamic_floor_corner;
+	bool			uses_dynamic_floor;
 
 	int			current_corner;
 	int			last_closed_loop_corner;
 	bool			aggregated;
 	int			debug_corner;
-	int			ldo_headroom_volt;
+	int			ldo_min_headroom_volt;
+	int			ldo_max_headroom_volt;
 	int			ldo_adjust_volt;
 	int			ldo_ret_volt;
 	int			ldo_max_volt;
 	bool			ldo_mode_allowed;
 	bool			vreg_enabled;
+
+	bool			aging_allowed;
+	int			aging_corner;
+	int			aging_max_adjust_volt;
 };
 
 /**
@@ -229,6 +286,24 @@ struct cpr3_thread {
 
 /* Per CPR controller data */
 /**
+ * enum cpr3_mem_acc_corners - Constants which define the number of mem-acc
+ *		regulator corners available in the mem-acc corner map array.
+ * %CPR3_MEM_ACC_LOW_CORNER:	Index in mem-acc corner map array mapping to the
+ *				mem-acc regulator corner
+ *				to be used for low voltage vdd supply
+ * %CPR3_MEM_ACC_HIGH_CORNER:	Index in mem-acc corner map array mapping to the
+ *				mem-acc regulator corner to be used for high
+ *				voltage vdd supply
+ * %CPR3_MEM_ACC_CORNERS:	Number of elements in the mem-acc corner map
+ *				array
+ */
+enum cpr3_mem_acc_corners {
+	CPR3_MEM_ACC_LOW_CORNER		= 0,
+	CPR3_MEM_ACC_HIGH_CORNER	= 1,
+	CPR3_MEM_ACC_CORNERS		= 2,
+};
+
+/**
  * enum cpr3_count_mode - CPR3 controller count mode which defines the
  *		method that CPR sensor data is acquired
  * %CPR3_COUNT_MODE_ALL_AT_ONCE_MIN:	Capture all CPR sensor readings
@@ -247,6 +322,29 @@ enum cpr3_count_mode {
 	CPR3_COUNT_MODE_ALL_AT_ONCE_MAX	= 1,
 	CPR3_COUNT_MODE_STAGGERED	= 2,
 	CPR3_COUNT_MODE_ALL_AT_ONCE_AGE	= 3,
+};
+
+/**
+ * struct cpr3_aging_sensor_info - CPR3 aging sensor information
+ * @sensor_id		The index of the CPR3 sensor to be used in the aging
+ *			measurement.
+ * @ro_scale		The CPR ring oscillator (RO) scaling factor for the
+ *			aging sensor with units of QUOT/V.
+ * @init_quot_diff:	The fused quotient difference between aged and un-aged
+ *			paths that was measured at manufacturing time.
+ * @measured_quot_diff: The quotient difference measured at runtime.
+ * @bypass_mask:	Bit mask of the CPR sensors that must be bypassed during
+ *			the aging measurement for this sensor
+ *
+ * This structure contains both configuration and runtime state data.  The
+ * element measured_quot_diff is a state variable.
+ */
+struct cpr3_aging_sensor_info {
+	u32			sensor_id;
+	u32			ro_scale;
+	int			init_quot_diff;
+	int			measured_quot_diff;
+	u32			bypass_mask[CPR3_MAX_SENSOR_COUNT / 32];
 };
 
 /**
@@ -273,9 +371,18 @@ enum cpr3_count_mode {
  *			controller manages
  * @system_regulator:	Pointer to the optional system-supply regulator upon
  *			which the VDD supply regulator depends.
+ * @mem_acc_regulator:	Pointer to the optional mem-acc supply regulator used
+ *			to manage memory circuitry settings based upon the
+ *			VDD supply output voltage.
  * @vdd_limit_regulator: Pointer to the VDD supply limit regulator which is used
  *			for hardware closed-loop in order specify ceiling and
  *			floor voltage limits (platform specific)
+ * @system_supply_max_volt: Voltage in microvolts which corresponds to the
+ *			absolute ceiling voltage of the system-supply
+ * @mem_acc_threshold_volt: mem-acc threshold voltage in microvolts
+ * @mem_acc_corner_map: mem-acc regulator corners mapping to low and high
+ *			voltage mem-acc settings for the memories powered by
+ *			this CPR3 controller and its associated CPR3 regulators
  * @core_clk:		Pointer to the CPR3 controller core clock
  * @iface_clk:		Pointer to the CPR3 interface clock (platform specific)
  * @bus_clk:		Pointer to the CPR3 bus clock (platform specific)
@@ -339,10 +446,31 @@ enum cpr3_count_mode {
  * @cpr_suspended:	Boolean which indicates that CPR has been temporarily
  *			disabled while enterring system suspend.
  * @debugfs:		Pointer to the debugfs directory of this CPR3 controller
+ * @aging_ref_volt:	Reference voltage in microvolts to configure when
+ *			performing CPR aging measurements.
+ * @aging_vdd_mode:	vdd-supply regulator mode to configure before performing
+ *			a CPR aging measurement.  It should be one of
+ *			REGULATOR_MODE_*.
+ * @aging_complete_vdd_mode: vdd-supply regulator mode to configure after
+ *			performing a CPR aging measurement.  It should be one of
+ *			REGULATOR_MODE_*.
+ * @aging_ref_adjust_volt: The reference aging voltage margin in microvolts that
+ *			should be added to the target quotients of the
+ *			regulators managed by this controller after derating.
+ * @aging_required:	Flag which indicates that a CPR aging measurement still
+ *			needs to be performed for this CPR3 controller.
+ * @aging_succeeded:	Flag which indicates that a CPR aging measurement has
+ *			completed successfully.
+ * @aging_failed:	Flag which indicates that a CPR aging measurement has
+ *			failed to complete successfully.
+ * @aging_sensor:	Array of CPR3 aging sensors which are used to perform
+ *			aging measurements at a runtime.
+ * @aging_sensor_count:	Number of elements in the aging_sensor array
  *
  * This structure contains both configuration and runtime state data.  The
  * elements cpr_allowed_sw, use_hw_closed_loop, aggr_corner, cpr_enabled,
- * last_corner_was_closed_loop, and cpr_suspended are state variables.
+ * last_corner_was_closed_loop, cpr_suspended, aging_ref_adjust_volt,
+ * aging_required, aging_succeeded, and aging_failed are state variables.
  *
  * The apm* elements do not need to be initialized if the VDD supply managed by
  * the CPR3 controller does not utilize an APM.
@@ -361,7 +489,11 @@ struct cpr3_controller {
 	struct mutex		lock;
 	struct regulator	*vdd_regulator;
 	struct regulator	*system_regulator;
+	struct regulator	*mem_acc_regulator;
 	struct regulator	*vdd_limit_regulator;
+	int			system_supply_max_volt;
+	int			mem_acc_threshold_volt;
+	int			mem_acc_corner_map[CPR3_MEM_ACC_CORNERS];
 	struct clk		*core_clk;
 	struct clk		*iface_clk;
 	struct clk		*bus_clk;
@@ -392,6 +524,16 @@ struct cpr3_controller {
 	bool			last_corner_was_closed_loop;
 	bool			cpr_suspended;
 	struct dentry		*debugfs;
+
+	int			aging_ref_volt;
+	unsigned int		aging_vdd_mode;
+	unsigned int		aging_complete_vdd_mode;
+	int			aging_ref_adjust_volt;
+	bool			aging_required;
+	bool			aging_succeeded;
+	bool			aging_failed;
+	struct cpr3_aging_sensor_info *aging_sensor;
+	int			aging_sensor_count;
 };
 
 /* Used for rounding voltages to the closest physically available set point. */
@@ -430,26 +572,25 @@ int cpr3_convert_open_loop_voltage_fuse(int ref_volt, int step_volt, u32 fuse,
 			int fuse_len);
 u64 cpr3_interpolate(u64 x1, u64 y1, u64 x2, u64 y2, u64 x);
 int cpr3_parse_array_property(struct cpr3_regulator *vreg,
-			const char *prop_name, int corner_count, int corner_sum,
-			int combo_offset, u32 *out);
-int cpr3_parse_common_corner_data(struct cpr3_regulator *vreg, int *corner_sum,
-			int *combo_offset);
+			const char *prop_name, int tuple_size, u32 *out);
+int cpr3_parse_corner_array_property(struct cpr3_regulator *vreg,
+			const char *prop_name, int tuple_size, u32 *out);
+int cpr3_parse_common_corner_data(struct cpr3_regulator *vreg);
 int cpr3_parse_thread_u32(struct cpr3_thread *thread, const char *propname,
-		       u32 *out_value, u32 value_min, u32 value_max);
+			u32 *out_value, u32 value_min, u32 value_max);
 int cpr3_parse_ctrl_u32(struct cpr3_controller *ctrl, const char *propname,
-		       u32 *out_value, u32 value_min, u32 value_max);
+			u32 *out_value, u32 value_min, u32 value_max);
 int cpr3_parse_common_thread_data(struct cpr3_thread *thread);
 int cpr3_parse_common_ctrl_data(struct cpr3_controller *ctrl);
 int cpr3_limit_open_loop_voltages(struct cpr3_regulator *vreg);
 void cpr3_open_loop_voltage_as_ceiling(struct cpr3_regulator *vreg);
-int cpr3_limit_floor_voltages(struct cpr3_regulator *vreg, int corner_sum,
-		int combo_offset);
+int cpr3_limit_floor_voltages(struct cpr3_regulator *vreg);
 void cpr3_print_quots(struct cpr3_regulator *vreg);
 int cpr3_adjust_fused_open_loop_voltages(struct cpr3_regulator *vreg,
-		int *fuse_volt);
-int cpr3_adjust_open_loop_voltages(struct cpr3_regulator *vreg, int corner_sum,
-		int combo_offset);
+			int *fuse_volt);
+int cpr3_adjust_open_loop_voltages(struct cpr3_regulator *vreg);
 int cpr3_quot_adjustment(int ro_scale, int volt_adjust);
+int cpr3_voltage_adjustment(int ro_scale, int quot_adjust);
 
 #else
 
@@ -510,14 +651,18 @@ static inline u64 cpr3_interpolate(u64 x1, u64 y1, u64 x2, u64 y2, u64 x)
 }
 
 static inline int cpr3_parse_array_property(struct cpr3_regulator *vreg,
-			const char *prop_name, int corner_count, int corner_sum,
-			int combo_offset, u32 *out)
+			const char *prop_name, int tuple_size, u32 *out)
 {
 	return -EPERM;
 }
 
-static inline int cpr3_parse_common_corner_data(struct cpr3_regulator *vreg,
-			int *corner_sum, int *combo_offset)
+static inline int cpr3_parse_corner_array_property(struct cpr3_regulator *vreg,
+			const char *prop_name, int tuple_size, u32 *out)
+{
+	return -EPERM;
+}
+
+static inline int cpr3_parse_common_corner_data(struct cpr3_regulator *vreg)
 {
 	return -EPERM;
 }
@@ -557,8 +702,7 @@ static inline void cpr3_open_loop_voltage_as_ceiling(
 	return;
 }
 
-static inline int cpr3_limit_floor_voltages(struct cpr3_regulator *vreg,
-			int corner_sum, int combo_offset)
+static inline int cpr3_limit_floor_voltages(struct cpr3_regulator *vreg)
 {
 	return -EPERM;
 }
@@ -569,18 +713,22 @@ static inline void cpr3_print_quots(struct cpr3_regulator *vreg)
 }
 
 static inline int cpr3_adjust_fused_open_loop_voltages(
-		struct cpr3_regulator *vreg, int *fuse_volt)
+			struct cpr3_regulator *vreg, int *fuse_volt)
 {
 	return -EPERM;
 }
 
-static inline int cpr3_adjust_open_loop_voltages(struct cpr3_regulator *vreg,
-		int corner_sum, int combo_offset)
+static inline int cpr3_adjust_open_loop_voltages(struct cpr3_regulator *vreg)
 {
 	return -EPERM;
 }
 
 static inline int cpr3_quot_adjustment(int ro_scale, int volt_adjust)
+{
+	return 0;
+}
+
+static inline int cpr3_voltage_adjustment(int ro_scale, int quot_adjust)
 {
 	return 0;
 }

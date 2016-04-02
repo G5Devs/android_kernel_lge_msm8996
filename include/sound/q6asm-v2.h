@@ -17,6 +17,7 @@
 #include <sound/apr_audio-v2.h>
 #include <linux/list.h>
 #include <linux/msm_ion.h>
+#include <linux/spinlock.h>
 
 #define IN                      0x000
 #define OUT                     0x001
@@ -173,6 +174,8 @@ struct audio_client {
 	/* Relative or absolute TS */
 	atomic_t	       time_flag;
 	atomic_t	       nowait_cmd_cnt;
+	struct list_head       no_wait_que;
+	spinlock_t             no_wait_que_spinlock;
 	atomic_t               mem_state;
 	void		       *priv;
 	uint32_t               io_mode;
@@ -273,6 +276,8 @@ int q6asm_memory_unmap(struct audio_client *ac, phys_addr_t buf_add,
 int q6asm_map_rtac_block(struct rtac_cal_block_data *cal_block);
 
 int q6asm_unmap_rtac_block(uint32_t *mem_map_handle);
+
+int q6asm_send_cal(struct audio_client *ac);
 
 int q6asm_run(struct audio_client *ac, uint32_t flags,
 		uint32_t msw_ts, uint32_t lsw_ts);

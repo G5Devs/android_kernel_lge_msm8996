@@ -1103,6 +1103,13 @@ static int remap_cal_data(struct cal_block_data *cal_block, int cal_index)
 {
 	int ret = 0;
 
+	if (cal_block->map_data.ion_client == NULL) {
+		pr_err("%s: No ION allocation for cal index %d!\n",
+			__func__, cal_index);
+		ret = -EINVAL;
+		goto done;
+	}
+
 	if ((cal_block->map_data.map_size > 0) &&
 		(cal_block->map_data.q6map_handle == 0)) {
 		atomic_set(&this_afe.mem_map_cal_index, cal_index);
@@ -1894,6 +1901,7 @@ static int afe_send_cmd_port_start(u16 port_id)
 	if (ret) {
 		pr_err("%s: AFE enable for port 0x%x failed %d\n", __func__,
 		       port_id, ret);
+		WARN_ON(1);
 	} else if (this_afe.task != current) {
 		this_afe.task = current;
 		pr_debug("task_name = %s pid = %d\n",
@@ -2229,6 +2237,7 @@ int afe_port_start(u16 port_id, union afe_port_config *afe_config,
 
 fail_cmd:
 	mutex_unlock(&this_afe.afe_cmd_lock);
+
 	return ret;
 }
 

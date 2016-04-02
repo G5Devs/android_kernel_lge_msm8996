@@ -284,6 +284,11 @@ static int msm_pcm_playback_prepare(struct snd_pcm_substream *substream)
 		pr_err("%s: platform data not populated\n", __func__);
 		return -EINVAL;
 	}
+	if (!prtd || !prtd->audio_client) {
+		pr_err("%s: private data null or audio client freed\n",
+			__func__);
+		return -EINVAL;
+	}
 	params = &soc_prtd->dpcm[substream->stream].hw_params;
 
 	pr_debug("%s\n", __func__);
@@ -310,6 +315,10 @@ static int msm_pcm_playback_prepare(struct snd_pcm_substream *substream)
 		prtd->audio_client = NULL;
 		return -ENOMEM;
 	}
+
+	ret = q6asm_send_cal(prtd->audio_client);
+	if (ret < 0)
+		pr_debug("%s : Send cal failed : %d", __func__, ret);
 
 	pr_debug("%s: session ID %d\n", __func__,
 			prtd->audio_client->session);
@@ -365,6 +374,11 @@ static int msm_pcm_capture_prepare(struct snd_pcm_substream *substream)
 		pr_err("%s: platform data not populated\n", __func__);
 		return -EINVAL;
 	}
+	if (!prtd || !prtd->audio_client) {
+		pr_err("%s: private data null or audio client freed\n",
+			__func__);
+		return -EINVAL;
+	}
 
 	if (prtd->enabled == IDLE) {
 		pr_debug("%s:perf_mode=%d periods=%d\n", __func__,
@@ -391,6 +405,10 @@ static int msm_pcm_capture_prepare(struct snd_pcm_substream *substream)
 			prtd->audio_client = NULL;
 			return -ENOMEM;
 		}
+
+		ret = q6asm_send_cal(prtd->audio_client);
+		if (ret < 0)
+			pr_debug("%s : Send cal failed : %d", __func__, ret);
 
 		pr_debug("%s: session ID %d\n",
 				__func__, prtd->audio_client->session);

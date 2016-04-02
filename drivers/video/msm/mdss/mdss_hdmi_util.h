@@ -258,9 +258,9 @@
 /* SEC_CTRL version that supports HDCP SEL */
 #define HDCP_SEL_MIN_SEC_VERSION         (0x50010000)
 
-#define TOP_AND_BOTTOM		0x10
-#define FRAME_PACKING		0x20
-#define SIDE_BY_SIDE_HALF	0x40
+#define TOP_AND_BOTTOM		(1 << HDMI_S3D_TOP_AND_BOTTOM)
+#define FRAME_PACKING		(1 << HDMI_S3D_FRAME_PACKING)
+#define SIDE_BY_SIDE_HALF	(1 << HDMI_S3D_SIDE_BY_SIDE)
 
 #define LPASS_LPAIF_RDDMA_CTL0           (0xFE152000)
 #define LPASS_LPAIF_RDDMA_PER_CNT0       (0x00000014)
@@ -353,6 +353,7 @@
 #define HDCP2P2_RXSTATUS_DDC_FAILED_SHIFT           8
 #define HDCP2P2_RXSTATUS_DDC_FAILED_ACKSHIFT        9
 #define HDCP2P2_RXSTATUS_DDC_FAILED_INTR_MASK       10
+#define HDCP2P2_RXSTATUS_DDC_DONE                   6
 
 /*
  * Bits 1:0 in HDMI_HW_DDC_CTRL that dictate how the HDCP 2.2 RxStatus will be
@@ -362,6 +363,9 @@
 #define HDCP2P2_RXSTATUS_HW_DDC_AUTOMATIC_LOOP      1
 #define HDCP2P2_RXSTATUS_HW_DDC_FORCE_LOOP          2
 #define HDCP2P2_RXSTATUS_HW_DDC_SW_TRIGGER          3
+
+/* default hsyncs for 4k@60 for 200ms */
+#define HDMI_DEFAULT_TIMEOUT_HSYNC 28571
 
 enum hdmi_tx_feature_type {
 	HDMI_TX_FEAT_EDID,
@@ -395,11 +399,6 @@ enum hdmi_tx_ddc_timer_type {
 	HDMI_TX_DDC_TIMER_MAX,
 };
 
-struct hdmi_tx_ddc_ctrl {
-	struct dss_io_data *io;
-	struct completion ddc_sw_done;
-};
-
 struct hdmi_tx_ddc_data {
 	char *what;
 	u8 *data_buf;
@@ -407,23 +406,47 @@ struct hdmi_tx_ddc_data {
 	u32 dev_addr;
 	u32 offset;
 	u32 request_len;
-	u32 no_align;
+	u32 retry_align;
 	u32 hard_timeout;
+	u32 timeout_left;
 	int retry;
 };
 
-enum hdmi_tx_hdcp2p2_rxstatus_field {
-	RXSTATUS_MESSAGE_SIZE,
-	RXSTATUS_REAUTH_REQ,
-	RXSTATUS_READY,
+enum hdmi_tx_hdcp2p2_rxstatus_intr_mask {
+	RXSTATUS_MESSAGE_SIZE = BIT(31),
+	RXSTATUS_READY = BIT(18),
+	RXSTATUS_REAUTH_REQ = BIT(14),
 };
 
 struct hdmi_tx_hdcp2p2_ddc_data {
-	struct hdmi_tx_ddc_data ddc_data;
-	enum hdmi_tx_hdcp2p2_rxstatus_field rxstatus_field;
-	u32 timer_delay_lines;
-	bool poll_sink;
+	enum hdmi_tx_hdcp2p2_rxstatus_intr_mask intr_mask;
+	u32 timeout_ms;
+	u32 timeout_hsync;
+	u32 periodic_timer_hsync;
+	u32 timeout_left;
+	u32 read_method;
+	u32 message_size;
+	bool encryption_ready;
+	bool ready;
+	bool reauth_req;
+	bool ddc_max_retries_fail;
+	bool ddc_done;
+	bool ddc_read_req;
+	bool ddc_timeout;
+	bool wait;
 	int irq_wait_count;
+	void (*link_cb)(void *data);
+	void *link_data;
+};
+
+struct hdmi_tx_ddc_ctrl {
+	atomic_t write_busy_wait_done;
+	atomic_t read_busy_wait_done;
+	atomic_t rxstatus_busy_wait_done;
+	struct dss_io_data *io;
+	struct completion ddc_sw_done;
+	struct hdmi_tx_ddc_data ddc_data;
+	struct hdmi_tx_hdcp2p2_ddc_data hdcp2p2_ddc_data;
 };
 
 
@@ -469,20 +492,20 @@ void *hdmi_get_featuredata_from_sysfs_dev(struct device *device, u32 type);
 /* DDC */
 void hdmi_ddc_config(struct hdmi_tx_ddc_ctrl *);
 int hdmi_ddc_isr(struct hdmi_tx_ddc_ctrl *, u32 version);
-int hdmi_ddc_write(struct hdmi_tx_ddc_ctrl *, struct hdmi_tx_ddc_data *);
-int hdmi_ddc_read_seg(struct hdmi_tx_ddc_ctrl *, struct hdmi_tx_ddc_data *);
-int hdmi_ddc_read(struct hdmi_tx_ddc_ctrl *, struct hdmi_tx_ddc_data *);
-int hdmi_ddc_abort_transaction(struct hdmi_tx_ddc_ctrl *,
-		struct hdmi_tx_ddc_data *);
+int hdmi_ddc_write(struct hdmi_tx_ddc_ctrl *);
+int hdmi_ddc_read_seg(struct hdmi_tx_ddc_ctrl *);
+int hdmi_ddc_read(struct hdmi_tx_ddc_ctrl *);
+int hdmi_ddc_abort_transaction(struct hdmi_tx_ddc_ctrl *);
 
 int hdmi_scdc_read(struct hdmi_tx_ddc_ctrl *ctrl, u32 data_type, u32 *val);
 int hdmi_scdc_write(struct hdmi_tx_ddc_ctrl *ctrl, u32 data_type, u32 val);
 int hdmi_setup_ddc_timers(struct hdmi_tx_ddc_ctrl *ctrl,
 			  u32 type, u32 to_in_num_lines);
-void hdmi_hdcp2p2_ddc_reset(struct hdmi_tx_ddc_ctrl *ctrl);
+void hdmi_scrambler_ddc_disable(struct hdmi_tx_ddc_ctrl *ctrl);
 void hdmi_hdcp2p2_ddc_disable(struct hdmi_tx_ddc_ctrl *ctrl);
-int hdmi_hdcp2p2_ddc_read_rxstatus(struct hdmi_tx_ddc_ctrl *ctrl,
-	struct hdmi_tx_hdcp2p2_ddc_data *hdcp2p2_ddc_data,
-	struct completion *rxstatus_completion);
+int hdmi_hdcp2p2_ddc_check_status(struct hdmi_tx_ddc_ctrl *ctrl);
+int hdmi_hdcp2p2_ddc_read_rxstatus(struct hdmi_tx_ddc_ctrl *ctrl);
+int hdmi_utils_get_timeout_in_hysnc(struct msm_hdmi_mode_timing_info *timing,
+	u32 timeout_ms);
 
 #endif /* __HDMI_UTIL_H__ */

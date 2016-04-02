@@ -21,7 +21,10 @@ enum hdmi_hdcp_state {
 	HDCP_STATE_INACTIVE,
 	HDCP_STATE_AUTHENTICATING,
 	HDCP_STATE_AUTHENTICATED,
-	HDCP_STATE_AUTH_FAIL
+	HDCP_STATE_AUTH_FAIL,
+	HDCP_STATE_AUTH_ENC_NONE,
+	HDCP_STATE_AUTH_ENC_1X,
+	HDCP_STATE_AUTH_ENC_2P2
 };
 
 struct hdmi_hdcp_init_data {
@@ -37,6 +40,7 @@ struct hdmi_hdcp_init_data {
 	u32 phy_addr;
 	u32 hdmi_tx_ver;
 	struct msm_hdmi_mode_timing_info *timing;
+	bool tethered;
 };
 
 struct hdmi_hdcp_ops {

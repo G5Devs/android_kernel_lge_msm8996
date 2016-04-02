@@ -1019,6 +1019,7 @@ static struct clk_freq_tbl ftbl_blsp2_qup6_spi_apps_clk_src[] = {
 	F(   9600000,         cxo_clk_src,    2,    0,     0),
 	F(  15000000, gpll0_out_main,   10,    1,     4),
 	F(  25000000, gpll0_out_main,   12,    1,     2),
+	F(  40000000, gpll0_out_main,   15,    0,     0),
 	F(  50000000, gpll0_out_main,   12,    0,     0),
 	F_END
 };
@@ -2216,19 +2217,6 @@ static struct branch_clk gcc_mmss_noc_cfg_ahb_clk = {
 	},
 };
 
-static struct branch_clk gcc_mmss_sys_noc_axi_clk = {
-	.cbcr_reg = GCC_MMSS_SYS_NOC_AXI_CBCR,
-	.has_sibling = 1,
-	.check_enable_bit = true,
-	.base = &virt_base,
-	.c = {
-		.dbg_name = "gcc_mmss_sys_noc_axi_clk",
-		.always_on = true,
-		.ops = &clk_ops_branch,
-		CLK_INIT(gcc_mmss_sys_noc_axi_clk.c),
-	},
-};
-
 static struct branch_clk gcc_pcie_0_aux_clk = {
 	.cbcr_reg = GCC_PCIE_0_AUX_CBCR,
 	.has_sibling = 0,
@@ -3143,6 +3131,17 @@ static struct branch_clk gcc_dcc_ahb_clk = {
 	},
 };
 
+static struct branch_clk gcc_aggre0_noc_mpu_cfg_ahb_clk = {
+	.cbcr_reg = GCC_AGGRE0_NOC_MPU_CFG_AHB_CBCR,
+	.has_sibling = 1,
+	.base = &virt_base,
+	.c = {
+		.dbg_name = "gcc_aggre0_noc_mpu_cfg_ahb_clk",
+		.ops = &clk_ops_branch,
+		CLK_INIT(gcc_aggre0_noc_mpu_cfg_ahb_clk.c),
+	},
+};
+
 static struct mux_clk gcc_debug_mux;
 static struct mux_clk gcc_debug_mux_v2;
 static struct clk_ops clk_ops_debug_mux;
@@ -3183,7 +3182,6 @@ static struct mux_clk gcc_debug_mux = {
 		{ &gcc_ce1_ahb_m_clk.c, 0x009b },
 		{ &measure_only_bimc_hmss_axi_clk.c, 0x00a5 },
 		{ &gcc_periph_noc_usb20_ahb_clk.c, 0x0014 },
-		{ &gcc_mmss_sys_noc_axi_clk.c, 0x0018 },
 		{ &gcc_mmss_noc_cfg_ahb_clk.c, 0x0019 },
 		{ &gcc_mmss_bimc_gfx_clk.c, 0x001c},
 		{ &gcc_bimc_gfx_clk.c, 0x00af},
@@ -3290,6 +3288,7 @@ static struct mux_clk gcc_debug_mux = {
 		{ &gcc_aggre2_ufs_axi_clk.c, 0x0126 },
 		{ &gcc_aggre2_usb3_axi_clk.c, 0x0127 },
 		{ &gcc_dcc_ahb_clk.c, 0x012b },
+		{ &gcc_aggre0_noc_mpu_cfg_ahb_clk.c, 0x012c},
 		{ &ipa_clk.c, 0x12f },
 	),
 	.c = {
@@ -3510,7 +3509,6 @@ static struct clk_lookup msm_clocks_gcc_8996[] = {
 	CLK_LIST(gcc_gp3_clk),
 	CLK_LIST(gcc_hmss_rbcpr_clk),
 	CLK_LIST(gcc_mmss_noc_cfg_ahb_clk),
-	CLK_LIST(gcc_mmss_sys_noc_axi_clk),
 	CLK_LIST(gcc_sys_noc_usb3_axi_clk),
 	CLK_LIST(gcc_sys_noc_ufs_axi_clk),
 	CLK_LIST(gcc_pcie_0_phy_reset),
@@ -3583,6 +3581,7 @@ static struct clk_lookup msm_clocks_gcc_8996[] = {
 	CLK_LIST(gcc_mmss_bimc_gfx_clk),
 	CLK_LIST(gcc_bimc_gfx_clk),
 	CLK_LIST(gcc_dcc_ahb_clk),
+	CLK_LIST(gcc_aggre0_noc_mpu_cfg_ahb_clk),
 };
 
 static struct clk_lookup msm_clocks_gcc_8996_v2[] = {
@@ -3661,6 +3660,7 @@ static int msm_gcc_8996_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_dig.regulator[0]);
 	}
 
+	bimc_clk.c.parent = &cxo_clk_src.c;
 	ret = of_msm_clock_register(pdev->dev.of_node, msm_clocks_rpm_8996,
 				    ARRAY_SIZE(msm_clocks_rpm_8996));
 	if (ret)

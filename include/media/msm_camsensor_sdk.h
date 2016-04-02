@@ -42,6 +42,9 @@
 
 #define MAX_LED_TRIGGERS          3
 
+#define MSM_EEPROM_MEMORY_MAP_MAX_SIZE  80
+#define MSM_EEPROM_MAX_MEM_MAP_CNT      8
+
 enum msm_sensor_camera_id_t {
 	CAMERA_0,
 	CAMERA_1,
@@ -100,6 +103,11 @@ enum msm_sensor_power_seq_gpio_t {
 	SENSOR_GPIO_VANA,
 	SENSOR_GPIO_VDIG,
 	SENSOR_GPIO_VAF,
+	#ifdef CONFIG_LGE_CAMERA_DRIVER
+	SENSOR_GPIO_LDAF_EN,
+	SENSOR_GPIO_OIS_RESET,
+	SENSOR_GPIO_TCS_VANA,
+	#endif
 	SENSOR_GPIO_FL_EN,
 	SENSOR_GPIO_FL_NOW,
 	SENSOR_GPIO_FL_RESET,
@@ -113,6 +121,12 @@ enum msm_camera_vreg_name_t {
 	CAM_VIO,
 	CAM_VANA,
 	CAM_VAF,
+	#ifdef CONFIG_LGE_CAMERA_DRIVER
+	CAM_OISVDD,
+	CAM_OISDVDD,
+	CAM_I2C_PULL_UP,
+	CAM_TCS_VIO,
+	#endif
 	CAM_V_CUSTOM1,
 	CAM_V_CUSTOM2,
 	CAM_VREG_MAX,
@@ -159,6 +173,9 @@ enum actuator_type {
 	ACTUATOR_PIEZO,
 	ACTUATOR_HVCM,
 	ACTUATOR_BIVCM,
+	#ifdef CONFIG_LG_OIS
+	ACTUATOR_CLOSE_LOOP_HVCM,
+	#endif
 };
 
 enum msm_flash_driver_type {
@@ -199,12 +216,38 @@ struct msm_sensor_power_setting_array {
 	unsigned short size_down;
 };
 
+enum msm_camera_i2c_operation {
+	MSM_CAM_WRITE = 0,
+	MSM_CAM_POLL,
+	MSM_CAM_READ,
+};
 
 struct msm_sensor_i2c_sync_params {
 	unsigned int cid;
 	int csid;
 	unsigned short line;
 	unsigned short delay;
+};
+
+struct msm_camera_reg_settings_t {
+	uint16_t reg_addr;
+	enum msm_camera_i2c_reg_addr_type addr_type;
+	uint16_t reg_data;
+	enum msm_camera_i2c_data_type data_type;
+	enum msm_camera_i2c_operation i2c_operation;
+	uint16_t delay;
+};
+
+struct msm_eeprom_mem_map_t {
+	int slave_addr;
+	struct msm_camera_reg_settings_t
+		mem_settings[MSM_EEPROM_MEMORY_MAP_MAX_SIZE];
+	int memory_map_size;
+};
+
+struct msm_eeprom_memory_map_array {
+	struct msm_eeprom_mem_map_t memory_map[MSM_EEPROM_MAX_MEM_MAP_CNT];
+	uint32_t msm_size_of_max_mappings;
 };
 
 struct msm_sensor_init_params {
@@ -227,6 +270,8 @@ struct msm_camera_sensor_slave_info {
 	char eeprom_name[32];
 	char actuator_name[32];
 	char ois_name[32];
+	char proxy_name[32];
+	char tcs_name[32];
 	char flash_name[32];
 	enum msm_sensor_camera_id_t camera_id;
 	unsigned short slave_addr;
@@ -332,6 +377,13 @@ struct region_params_t {
 	unsigned short code_per_step;
 	/* qvalue for converting float type numbers to integer format */
 	unsigned int qvalue;
+	#ifdef CONFIG_LG_OIS
+	int infinity_dac;
+	int macro_dac;
+	int dac_20;
+	int dac_40;
+	int macro_mecha_end;
+	#endif
 };
 
 struct reg_settings_t {

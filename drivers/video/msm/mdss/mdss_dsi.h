@@ -204,6 +204,8 @@ enum dsi_pm_type {
 #define DSI_DYNAMIC_REFRESH_PIPE_DELAY2		0x208
 #define DSI_DYNAMIC_REFRESH_PLL_DELAY		0x20C
 
+#define MAX_ERR_INDEX			10
+
 extern struct device dsi_dev;
 extern u32 dsi_irq;
 extern struct mdss_dsi_ctrl_pdata *ctrl_list[];
@@ -318,6 +320,19 @@ struct dsi_panel_timing {
 	char t_clk_post;
 	char t_clk_pre;
 	struct dsi_panel_cmds on_cmds;
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+	struct dsi_panel_cmds vcom_cmds;
+#endif
+#if defined(CONFIG_LGE_ENHANCE_GALLERY_SHARPNESS)
+	struct dsi_panel_cmds sharpness_on_cmds;
+	struct dsi_panel_cmds ce_on_cmds;
+#endif
+#if defined(CONFIG_LGE_LCD_DYNAMIC_CABC_MIE_CTRL)
+	struct dsi_panel_cmds ie_on_cmds;
+	struct dsi_panel_cmds ie_off_cmds;
+	struct dsi_panel_cmds cabc_20_cmds;
+	struct dsi_panel_cmds cabc_30_cmds;
+#endif
 	struct dsi_panel_cmds post_panel_on_cmds;
 	struct dsi_panel_cmds switch_cmds;
 };
@@ -338,6 +353,17 @@ struct panel_horizontal_idle {
 	int min;
 	int max;
 	int idle;
+};
+
+struct dsi_err_container {
+	u32 fifo_err_cnt;
+	u32 phy_err_cnt;
+	u32 err_cnt;
+	u32 err_time_delta;
+	u32 max_err_index;
+
+	u32 index;
+	s64 err_time[MAX_ERR_INDEX];
 };
 
 #define DSI_CTRL_LEFT		DSI_CTRL_0
@@ -412,6 +438,11 @@ struct mdss_dsi_ctrl_pdata {
 	int clk_lane_cnt;
 	bool dmap_iommu_map;
 	bool dsi_irq_line;
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+	int dsv_ena_gpio;
+	int vddio_en_gpio;
+	int vpnl_en_gpio;
+#endif
 	bool dcs_cmd_insert;
 	atomic_t te_irq_ready;
 
@@ -430,6 +461,19 @@ struct mdss_dsi_ctrl_pdata {
 	struct mdss_intf_recovery *recovery;
 
 	struct dsi_panel_cmds on_cmds;
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+	struct dsi_panel_cmds vcom_cmds;
+#endif
+#if defined(CONFIG_LGE_ENHANCE_GALLERY_SHARPNESS)
+	struct dsi_panel_cmds sharpness_on_cmds;
+	struct dsi_panel_cmds ce_on_cmds;
+#endif
+#if defined(CONFIG_LGE_LCD_DYNAMIC_CABC_MIE_CTRL)
+	struct dsi_panel_cmds ie_on_cmds;
+	struct dsi_panel_cmds ie_off_cmds;
+	struct dsi_panel_cmds cabc_20_cmds;
+	struct dsi_panel_cmds cabc_30_cmds;
+#endif
 	struct dsi_panel_cmds post_dms_on_cmds;
 	struct dsi_panel_cmds post_panel_on_cmds;
 	struct dsi_panel_cmds off_cmds;
@@ -438,6 +482,10 @@ struct mdss_dsi_ctrl_pdata {
 	u32 *status_value;
 	u32 status_error_count;
 	u32 max_status_error_count;
+
+#if defined(CONFIG_LGE_DISPLAY_AOD_SUPPORTED)
+	struct dsi_panel_cmds *aod_cmds;
+#endif
 
 	struct dsi_panel_cmds video2cmd;
 	struct dsi_panel_cmds cmd2video;
@@ -455,6 +503,7 @@ struct mdss_dsi_ctrl_pdata {
 	int mdp_busy;
 	struct mutex mutex;
 	struct mutex cmd_mutex;
+	struct mutex cmdlist_mutex;
 	struct regulator *lab; /* vreg handle */
 	struct regulator *ibb; /* vreg handle */
 	struct mutex clk_lane_mutex;
@@ -465,7 +514,7 @@ struct mdss_dsi_ctrl_pdata {
 	bool mmss_clamp;
 	char dlane_swap;	/* data lane swap */
 	bool is_phyreg_enabled;
-
+	bool burst_mode_enabled;
 
 	struct dsi_buf tx_buf;
 	struct dsi_buf rx_buf;
@@ -492,6 +541,8 @@ struct mdss_dsi_ctrl_pdata {
 	int m_vote_cnt;
 	/* debugfs structure */
 	struct mdss_dsi_debugfs_info *debugfs_info;
+
+	struct dsi_err_container err_cont;
 };
 
 struct dsi_status_data {
@@ -583,8 +634,7 @@ void mdss_dsi_get_hw_revision(struct mdss_dsi_ctrl_pdata *ctrl);
 u32 mdss_dsi_panel_cmd_read(struct mdss_dsi_ctrl_pdata *ctrl, char cmd0,
 		char cmd1, void (*fxn)(int), char *rbuf, int len);
 int mdss_dsi_panel_init(struct device_node *node,
-		struct mdss_dsi_ctrl_pdata *ctrl_pdata,
-		bool cmd_cfg_cont_splash);
+		struct mdss_dsi_ctrl_pdata *ctrl_pdata);
 int mdss_dsi_panel_timing_switch(struct mdss_dsi_ctrl_pdata *ctrl_pdata,
 			struct mdss_panel_timing *timing);
 
@@ -595,8 +645,11 @@ int mdss_panel_get_dst_fmt(u32 bpp, char mipi_mode, u32 pixel_packing,
 
 int mdss_dsi_register_recovery_handler(struct mdss_dsi_ctrl_pdata *ctrl,
 		struct mdss_intf_recovery *recovery);
-void mdss_dsi_panel_dsc_pps_send(struct mdss_dsi_ctrl_pdata *ctrl);
 void mdss_dsi_unregister_bl_settings(struct mdss_dsi_ctrl_pdata *ctrl_pdata);
+void mdss_dsi_panel_dsc_pps_send(struct mdss_dsi_ctrl_pdata *ctrl,
+				struct mdss_panel_info *pinfo);
+void mdss_dsi_dsc_config(struct mdss_dsi_ctrl_pdata *ctrl,
+	struct dsc_desc *dsc);
 
 static inline const char *__mdss_dsi_pm_name(enum dsi_pm_type module)
 {

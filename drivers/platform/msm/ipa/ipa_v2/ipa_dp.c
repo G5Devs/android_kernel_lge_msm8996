@@ -294,6 +294,8 @@ int ipa_send_one(struct ipa_sys_context *sys, struct ipa_desc *desc,
 	dma_addr_t dma_address;
 	u16 len;
 	u32 mem_flag = GFP_ATOMIC;
+	struct sps_iovec iov;
+	int ret;
 
 	if (unlikely(!in_atomic))
 		mem_flag = GFP_KERNEL;
@@ -346,6 +348,17 @@ int ipa_send_one(struct ipa_sys_context *sys, struct ipa_desc *desc,
 
 	spin_lock_bh(&sys->spinlock);
 	list_add_tail(&tx_pkt->link, &sys->head_desc_list);
+	if (sys->policy == IPA_POLICY_NOINTR_MODE) {
+		do {
+			ret = sps_get_iovec(sys->ep->ep_hdl, &iov);
+			if (ret) {
+				IPADBG("sps_get_iovec failed %d\n", ret);
+				break;
+			}
+			if ((iov.addr == 0x0) && (iov.size == 0x0))
+				break;
+		} while (1);
+	}
 	result = sps_transfer_one(sys->ep->ep_hdl, dma_address, len, tx_pkt,
 			sps_flags);
 	if (result) {
@@ -401,6 +414,8 @@ int ipa_send(struct ipa_sys_context *sys, u32 num_desc, struct ipa_desc *desc,
 	int fail_dma_wrap = 0;
 	uint size = num_desc * sizeof(struct sps_iovec);
 	u32 mem_flag = GFP_ATOMIC;
+	struct sps_iovec iov;
+	int ret;
 
 	if (unlikely(!in_atomic))
 		mem_flag = GFP_KERNEL;
@@ -511,6 +526,17 @@ int ipa_send(struct ipa_sys_context *sys, u32 num_desc, struct ipa_desc *desc,
 		}
 	}
 
+	if (sys->policy == IPA_POLICY_NOINTR_MODE) {
+		do {
+			ret = sps_get_iovec(sys->ep->ep_hdl, &iov);
+			if (ret) {
+				IPADBG("sps_get_iovec failed %d\n", ret);
+				break;
+			}
+			if ((iov.addr == 0x0) && (iov.size == 0x0))
+				break;
+		} while (1);
+	}
 	result = sps_transfer(sys->ep->ep_hdl, &transfer);
 	if (result) {
 		IPAERR("sps_transfer failed rc=%d\n", result);
@@ -792,6 +818,77 @@ fail:
 			msecs_to_jiffies(1));
 }
 
+
+/**
+ * ipa_sps_irq_control() - Function to enable or disable BAM IRQ.
+ */
+static void ipa_sps_irq_control(struct ipa_sys_context *sys, bool enable)
+{
+	int ret;
+
+	if (enable) {
+		ret = sps_get_config(sys->ep->ep_hdl, &sys->ep->connect);
+		if (ret) {
+			IPAERR("sps_get_config() failed %d\n", ret);
+			return;
+		}
+		sys->event.options = SPS_O_EOT;
+		ret = sps_register_event(sys->ep->ep_hdl, &sys->event);
+		if (ret) {
+			IPAERR("sps_register_event() failed %d\n", ret);
+			return;
+		}
+		sys->ep->connect.options =
+			SPS_O_AUTO_ENABLE | SPS_O_ACK_TRANSFERS | SPS_O_EOT;
+		ret = sps_set_config(sys->ep->ep_hdl, &sys->ep->connect);
+		if (ret) {
+			IPAERR("sps_set_config() failed %d\n", ret);
+			return;
+		}
+	} else {
+		ret = sps_get_config(sys->ep->ep_hdl,
+				&sys->ep->connect);
+		if (ret) {
+			IPAERR("sps_get_config() failed %d\n", ret);
+			return;
+		}
+		sys->ep->connect.options = SPS_O_AUTO_ENABLE |
+			SPS_O_ACK_TRANSFERS | SPS_O_POLL;
+		ret = sps_set_config(sys->ep->ep_hdl,
+				&sys->ep->connect);
+		if (ret) {
+			IPAERR("sps_set_config() failed %d\n", ret);
+			return;
+		}
+	}
+}
+
+void ipa_sps_irq_control_all(bool enable)
+{
+	struct ipa_ep_context *ep;
+	int ipa_ep_idx, client_num;
+
+	IPADBG("\n");
+
+	for (client_num = IPA_CLIENT_CONS;
+		client_num < IPA_CLIENT_MAX; client_num++) {
+		if (!IPA_CLIENT_IS_APPS_CONS(client_num))
+			continue;
+
+		ipa_ep_idx = ipa_get_ep_mapping(client_num);
+		if (ipa_ep_idx == -1) {
+			IPAERR("Invalid client.\n");
+			continue;
+		}
+		ep = &ipa_ctx->ep[ipa_ep_idx];
+		if (!ep->valid) {
+			IPAERR("EP (%d) not allocated.\n", ipa_ep_idx);
+			continue;
+		}
+		ipa_sps_irq_control(ep->sys, enable);
+	}
+}
+
 /**
  * ipa_rx_notify() - Callback function which is called by the SPS driver when a
  * a packet is received
@@ -1063,6 +1160,16 @@ int ipa2_setup_sys_pipe(struct ipa_sys_connect_params *sys_in, u32 *clnt_hdl)
 	ep->keep_ipa_awake = sys_in->keep_ipa_awake;
 	atomic_set(&ep->avail_fifo_desc,
 		((sys_in->desc_fifo_sz/sizeof(struct sps_iovec))-1));
+
+	if (ep->status.status_en && IPA_CLIENT_IS_CONS(ep->client) &&
+	    ep->sys->status_stat == NULL) {
+		ep->sys->status_stat =
+			kzalloc(sizeof(struct ipa_status_stats), GFP_KERNEL);
+		if (!ep->sys->status_stat) {
+			IPAERR("no memory\n");
+			goto fail_gen2;
+		}
+	}
 
 	result = ipa_enable_data_path(ipa_ep_idx);
 	if (result) {
@@ -1992,6 +2099,13 @@ begin:
 		IPADBG("STATUS opcode=%d src=%d dst=%d len=%d\n",
 				status->status_opcode, status->endp_src_idx,
 				status->endp_dest_idx, status->pkt_len);
+		if (sys->status_stat) {
+			sys->status_stat->status[sys->status_stat->curr] =
+				*status;
+			sys->status_stat->curr++;
+			if (sys->status_stat->curr == IPA_MAX_STATUS_STAT_NUM)
+				sys->status_stat->curr = 0;
+		}
 
 		if (status->status_opcode !=
 			IPA_HW_STATUS_OPCODE_DROPPED_PACKET &&
@@ -2240,6 +2354,15 @@ static int ipa_wan_rx_pyld_hdlr(struct sk_buff *skb,
 		IPADBG("STATUS opcode=%d src=%d dst=%d len=%d\n",
 				status->status_opcode, status->endp_src_idx,
 				status->endp_dest_idx, status->pkt_len);
+
+		if (sys->status_stat) {
+			sys->status_stat->status[sys->status_stat->curr] =
+				*status;
+			sys->status_stat->curr++;
+			if (sys->status_stat->curr == IPA_MAX_STATUS_STAT_NUM)
+				sys->status_stat->curr = 0;
+		}
+
 		if (status->status_opcode !=
 			IPA_HW_STATUS_OPCODE_DROPPED_PACKET &&
 			status->status_opcode !=

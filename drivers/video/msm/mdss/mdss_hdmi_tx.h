@@ -43,14 +43,6 @@ struct hdmi_tx_platform_data {
 	u64 pin_states;
 };
 
-struct hdmi_audio {
-	int sample_rate;
-	int channel_num;
-	int spkr_alloc;
-	int level_shift;
-	int down_mix;
-};
-
 struct hdmi_tx_pinctrl {
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *state_active;
@@ -134,9 +126,12 @@ struct hdmi_tx_ctrl {
 
 
 	struct hdmi_tx_pinctrl pin_res;
-	struct hdmi_audio audio_data;
+	struct msm_hdmi_audio_setup_params audio_data;
 
 	struct mutex mutex;
+#ifdef CONFIG_SLIMPORT_DYNAMIC_HPD
+	struct mutex mutex_hpd;
+#endif
 	struct mutex lut_lock;
 	struct mutex power_mutex;
 	struct mutex cable_notify_mutex;
@@ -174,9 +169,13 @@ struct hdmi_tx_ctrl {
 	bool ds_registered;
 	bool scrambler_enabled;
 	u32 hdcp14_present;
+	bool hdcp1_use_sw_keys;
 	bool audio_ack_enabled;
 	atomic_t audio_ack_pending;
 	bool hdcp14_sw_keys;
+	bool auth_state;
+	bool custom_edid;
+	u32 enc_lvl;
 
 	u8 spd_vendor_name[9];
 	u8 spd_product_description[17];
@@ -188,11 +187,12 @@ struct hdmi_tx_ctrl {
 
 	void *feature_data[HDMI_TX_FEAT_MAX];
 	struct hdmi_hdcp_ops *hdcp_ops;
-	void *hdcp_feature_data;
+	void *hdcp_data;
 	bool hdcp22_present;
 
 	u8 *edid_buf;
 	u32 edid_buf_size;
+	u32 s3d_mode;
 };
 
 #endif /* __MDSS_HDMI_TX_H__ */

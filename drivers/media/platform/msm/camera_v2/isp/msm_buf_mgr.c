@@ -39,6 +39,45 @@
 #define BUF_DEBUG_FULL 0
 #define MAX_LIST_COUNT 100
 
+static int msm_buf_check_head_sanity(struct msm_isp_bufq *bufq)
+{
+	int rc = 0;
+	struct list_head *prev = NULL;
+	struct list_head *next = NULL;
+
+	if (!bufq) {
+		pr_err("%s: Error! Invalid bufq\n", __func__);
+		return -EINVAL;
+	}
+
+	prev = bufq->head.prev;
+	next = bufq->head.next;
+
+	if (!prev) {
+		pr_err("%s: Error! bufq->head.prev is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (!next) {
+		pr_err("%s: Error! bufq->head.next is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (prev->next != &bufq->head) {
+		pr_err("%s: Error! head prev->next is %p should be %p\n",
+			__func__, prev->next, &bufq->head);
+		return -EINVAL;
+	}
+
+	if (next->prev != &bufq->head) {
+		pr_err("%s: Error! head next->prev is %p should be %p\n",
+			__func__, next->prev, &bufq->head);
+		return -EINVAL;
+	}
+
+	return rc;
+}
+
 struct msm_isp_bufq *msm_isp_get_bufq(
 	struct msm_isp_buf_mgr *buf_mgr,
 	uint32_t bufq_handle)
@@ -100,8 +139,6 @@ static uint32_t msm_isp_get_buf_handle(
 
 	for (i = 0; i < buf_mgr->num_buf_q; i++) {
 		if (buf_mgr->bufq[i].bufq_handle == 0) {
-			memset(&buf_mgr->bufq[i],
-				0, sizeof(struct msm_isp_bufq));
 			buf_mgr->bufq[i].bufq_handle =
 				embedded_stream_id << 8 | i;
 			return buf_mgr->bufq[i].bufq_handle;
@@ -125,9 +162,7 @@ static int msm_isp_free_bufq_handle(struct msm_isp_buf_mgr *buf_mgr,
 	bufq->stream_id = 0;
 	bufq->num_bufs = 0;
 	bufq->buf_type = 0;
-	memset(&bufq->head, 0, sizeof(bufq->head));
-	memset(&bufq->share_head, 0, sizeof(bufq->share_head));
-	bufq->buf_client_count = 0;
+	INIT_LIST_HEAD(&bufq->head);
 
 	return 0;
 }
@@ -212,6 +247,53 @@ static void msm_isp_unprepare_v4l2_buf(
 		cam_smmu_put_phy_addr(buf_mgr->iommu_hdl, mapped_info->buf_fd);
 	}
 	return;
+}
+
+static int msm_isp_map_buf(struct msm_isp_buf_mgr *buf_mgr,
+	struct msm_isp_buffer_mapped_info *mapped_info, uint32_t fd)
+{
+	int rc = 0;
+	int ret;
+
+	if (!buf_mgr || !mapped_info) {
+		pr_err_ratelimited("%s: %d] NULL ptr buf_mgr %p mapped_info %p\n",
+			__func__, __LINE__, buf_mgr, mapped_info);
+		return -EINVAL;
+	}
+	ret = cam_smmu_get_phy_addr(buf_mgr->iommu_hdl,
+				fd,
+				CAM_SMMU_MAP_RW,
+				&(mapped_info->paddr),
+				&(mapped_info->len));
+
+	if (ret) {
+		rc = -EINVAL;
+		pr_err_ratelimited("%s: cannot map address", __func__);
+		goto smmu_map_error;
+	}
+	CDBG("%s: addr:%lu\n",
+		__func__, (unsigned long)mapped_info->paddr);
+
+	return rc;
+smmu_map_error:
+	cam_smmu_put_phy_addr(buf_mgr->iommu_hdl,
+			fd);
+	return rc;
+}
+
+static int msm_isp_unmap_buf(struct msm_isp_buf_mgr *buf_mgr,
+	uint32_t fd)
+{
+	if (!buf_mgr) {
+		pr_err_ratelimited("%s: %d] NULL ptr buf_mgr\n",
+			__func__, __LINE__);
+		return -EINVAL;
+	}
+
+	cam_smmu_put_phy_addr(buf_mgr->iommu_hdl,
+			fd);
+
+	return 0;
 }
 
 static int msm_isp_buf_prepare(struct msm_isp_buf_mgr *buf_mgr,
@@ -378,14 +460,13 @@ static int msm_isp_buf_unprepare(struct msm_isp_buf_mgr *buf_mgr,
 	return 0;
 }
 
+
 static int msm_isp_get_buf(struct msm_isp_buf_mgr *buf_mgr, uint32_t id,
-	uint32_t bufq_handle, struct msm_isp_buffer **buf_info,
-	uint32_t *buf_cnt)
+	uint32_t bufq_handle, struct msm_isp_buffer **buf_info)
 {
 	int rc = -1;
 	unsigned long flags;
-	unsigned int list_count = 0;
-	struct msm_isp_buffer *temp_buf_info;
+	struct msm_isp_buffer *temp_buf_info = NULL;
 	struct msm_isp_bufq *bufq = NULL;
 	struct vb2_buffer *vb2_buf = NULL;
 
@@ -409,51 +490,22 @@ static int msm_isp_get_buf(struct msm_isp_buf_mgr *buf_mgr, uint32_t id,
 	}
 
 	*buf_info = NULL;
-	*buf_cnt = 0;
-	if (bufq->buf_type == ISP_SHARE_BUF) {
-		list_count = 0;
-		list_for_each_entry(temp_buf_info,
-			&bufq->share_head, share_list) {
-			if (!temp_buf_info->buf_used[id]) {
-				temp_buf_info->buf_used[id] = 1;
-				temp_buf_info->buf_get_count++;
-				*buf_cnt = temp_buf_info->buf_get_count;
-				if (temp_buf_info->buf_get_count ==
-					bufq->buf_client_count)
-					list_del(
-					&temp_buf_info->share_list);
-				if (temp_buf_info->buf_reuse_flag) {
-					kfree(temp_buf_info);
-				} else {
-					*buf_info = temp_buf_info;
-					rc = 0;
-				}
-				spin_unlock_irqrestore(
-					&bufq->bufq_lock, flags);
-				return rc;
-			} else if (temp_buf_info->buf_used[id] &&
-				temp_buf_info->buf_reuse_flag) {
-				spin_unlock_irqrestore(
-					&bufq->bufq_lock, flags);
-				return rc;
-			}
-			list_count++;
-			if (list_count > MAX_LIST_COUNT) {
-				pr_err_ratelimited("%s: %d share_list corruption, list corrupt! count = %d\n",
-					__func__, __LINE__,  list_count);
-				spin_unlock_irqrestore(
-					&bufq->bufq_lock, flags);
-				return -EINVAL;
-			}
-		}
-	}
 
 	switch (BUF_SRC(bufq->stream_id)) {
 	case MSM_ISP_BUFFER_SRC_NATIVE:
 		list_for_each_entry(temp_buf_info, &bufq->head, list) {
 			if (temp_buf_info->state ==
 					MSM_ISP_BUFFER_STATE_QUEUED) {
-				list_del(&temp_buf_info->list);
+				list_del_init(&temp_buf_info->list);
+				if (msm_buf_check_head_sanity(bufq) < 0) {
+					spin_unlock_irqrestore(
+						&bufq->bufq_lock, flags);
+					WARN(1, "%s buf_handle 0x%x buf_idx %d\n",
+						__func__,
+						bufq->bufq_handle,
+						temp_buf_info->buf_idx);
+					return -EFAULT;
+				}
 				*buf_info = temp_buf_info;
 				break;
 			}
@@ -500,90 +552,12 @@ static int msm_isp_get_buf(struct msm_isp_buf_mgr *buf_mgr, uint32_t id,
 	}
 
 	if (!(*buf_info)) {
-		if (bufq->buf_type == ISP_SHARE_BUF) {
-			temp_buf_info = kzalloc(
-			   sizeof(struct msm_isp_buffer), GFP_ATOMIC);
-			if (temp_buf_info) {
-				temp_buf_info->buf_reuse_flag = 1;
-				temp_buf_info->buf_used[id] = 1;
-				temp_buf_info->buf_get_count = 1;
-				list_add_tail(&temp_buf_info->share_list,
-							  &bufq->share_head);
-			} else
-				rc = -ENOMEM;
-		}
+		rc = -ENOMEM;
 	} else {
 		(*buf_info)->state = MSM_ISP_BUFFER_STATE_DEQUEUED;
-		if (bufq->buf_type == ISP_SHARE_BUF) {
-			memset((*buf_info)->buf_used, 0,
-				   sizeof(uint8_t) * bufq->buf_client_count);
-			(*buf_info)->buf_used[id] = 1;
-			(*buf_info)->buf_get_count = 1;
-			(*buf_info)->buf_put_count = 0;
-			(*buf_info)->buf_reuse_flag = 0;
-			list_add_tail(&(*buf_info)->share_list,
-						  &bufq->share_head);
-		}
 		rc = 0;
 	}
 	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
-	return rc;
-}
-
-static int msm_isp_put_buf(struct msm_isp_buf_mgr *buf_mgr,
-	uint32_t bufq_handle, uint32_t buf_index)
-{
-	int rc = -1;
-	unsigned long flags;
-	struct msm_isp_bufq *bufq = NULL;
-	struct msm_isp_buffer *buf_info = NULL;
-
-	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
-	if (!bufq) {
-		pr_err("%s: Invalid bufq\n", __func__);
-		return rc;
-	}
-
-	buf_info = msm_isp_get_buf_ptr(buf_mgr, bufq_handle, buf_index);
-	if (!buf_info) {
-		pr_err("%s: buf not found\n", __func__);
-		return rc;
-	}
-
-	spin_lock_irqsave(&bufq->bufq_lock, flags);
-
-	buf_info->buf_get_count = 0;
-	buf_info->buf_put_count = 0;
-	memset(buf_info->buf_used, 0, sizeof(buf_info->buf_used));
-
-	switch (buf_info->state) {
-	case MSM_ISP_BUFFER_STATE_PREPARED:
-		if (MSM_ISP_BUFFER_SRC_SCRATCH == BUF_SRC(bufq->stream_id))
-			list_add_tail(&buf_info->list, &bufq->head);
-	case MSM_ISP_BUFFER_STATE_DEQUEUED:
-	case MSM_ISP_BUFFER_STATE_DIVERTED:
-		if (MSM_ISP_BUFFER_SRC_NATIVE == BUF_SRC(bufq->stream_id))
-			list_add_tail(&buf_info->list, &bufq->head);
-		else if (MSM_ISP_BUFFER_SRC_HAL == BUF_SRC(bufq->stream_id))
-			buf_mgr->vb2_ops->put_buf(buf_info->vb2_buf,
-				bufq->session_id, bufq->stream_id);
-		buf_info->state = MSM_ISP_BUFFER_STATE_QUEUED;
-		rc = 0;
-		break;
-	case MSM_ISP_BUFFER_STATE_DISPATCHED:
-		buf_info->state = MSM_ISP_BUFFER_STATE_QUEUED;
-		rc = 0;
-		break;
-	case MSM_ISP_BUFFER_STATE_QUEUED:
-		rc = 0;
-		break;
-	default:
-		pr_err("%s: incorrect state = %d",
-			__func__, buf_info->state);
-		break;
-	}
-	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
-
 	return rc;
 }
 
@@ -609,12 +583,24 @@ static int msm_isp_put_buf_unsafe(struct msm_isp_buf_mgr *buf_mgr,
 	switch (buf_info->state) {
 	case MSM_ISP_BUFFER_STATE_PREPARED:
 	case MSM_ISP_BUFFER_STATE_DEQUEUED:
-	case MSM_ISP_BUFFER_STATE_DIVERTED:
-		if (BUF_SRC(bufq->stream_id))
+		if (BUF_SRC(bufq->stream_id)) {
+			if (!list_empty(&buf_info->list)) {
+				WARN(1, "%s: buf %x/%x double add\n",
+					__func__, bufq_handle, buf_index);
+				return -EFAULT;
+			}
 			list_add_tail(&buf_info->list, &bufq->head);
-		else
+			if (msm_buf_check_head_sanity(bufq) < 0) {
+				WARN(1, "%s buf_handle 0x%x buf_idx %d\n",
+					__func__,
+					bufq->bufq_handle,
+					buf_info->buf_idx);
+				return -EFAULT;
+			}
+		} else {
 			buf_mgr->vb2_ops->put_buf(buf_info->vb2_buf,
 				bufq->session_id, bufq->stream_id);
+		}
 		buf_info->state = MSM_ISP_BUFFER_STATE_QUEUED;
 		rc = 0;
 		break;
@@ -623,29 +609,27 @@ static int msm_isp_put_buf_unsafe(struct msm_isp_buf_mgr *buf_mgr,
 		rc = 0;
 		break;
 	case MSM_ISP_BUFFER_STATE_QUEUED:
-		rc = 0;
-		break;
+	case MSM_ISP_BUFFER_STATE_DIVERTED:
 	default:
-		pr_err("%s: incorrect state = %d",
-			__func__, buf_info->state);
-		break;
+		WARN(1, "%s: bufq 0x%x, buf idx 0x%x, incorrect state = %d",
+			__func__, bufq_handle, buf_index, buf_info->state);
+		return -EFAULT;
 	}
 
 	return rc;
 }
 
-static int msm_isp_update_put_buf_cnt(struct msm_isp_buf_mgr *buf_mgr,
-	uint32_t bufq_handle, uint32_t buf_index, uint32_t frame_id)
+static int msm_isp_put_buf(struct msm_isp_buf_mgr *buf_mgr,
+	uint32_t bufq_handle, uint32_t buf_index)
 {
 	int rc = -1;
+	unsigned long flags;
 	struct msm_isp_bufq *bufq = NULL;
 	struct msm_isp_buffer *buf_info = NULL;
-	enum msm_isp_buffer_state state;
-	unsigned long flags;
 
 	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
 	if (!bufq) {
-		pr_err("Invalid bufq\n");
+		pr_err("%s: Invalid bufq\n", __func__);
 		return rc;
 	}
 
@@ -656,35 +640,107 @@ static int msm_isp_update_put_buf_cnt(struct msm_isp_buf_mgr *buf_mgr,
 	}
 
 	spin_lock_irqsave(&bufq->bufq_lock, flags);
-	if (bufq->buf_type != ISP_SHARE_BUF ||
-		buf_info->buf_put_count == 0) {
-		buf_info->frame_id = frame_id;
+
+	rc = msm_isp_put_buf_unsafe(buf_mgr, bufq_handle, buf_index);
+
+	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
+
+	return rc;
+}
+
+static int msm_isp_update_put_buf_cnt_unsafe(
+	struct msm_isp_buf_mgr *buf_mgr,
+	uint32_t id, uint32_t bufq_handle, int32_t buf_index,
+	struct timeval *tv, uint32_t frame_id, uint32_t pingpong_bit)
+{
+	int rc = -1;
+	struct msm_isp_bufq *bufq = NULL;
+	struct msm_isp_buffer *buf_info = NULL;
+	uint8_t *put_buf_mask = NULL;
+
+	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
+	if (!bufq) {
+		pr_err("Invalid bufq\n");
+		return rc;
 	}
 
-	state = buf_info->state;
-	if (state == MSM_ISP_BUFFER_STATE_DEQUEUED ||
-		state == MSM_ISP_BUFFER_STATE_DIVERTED) {
-		if (bufq->buf_type == ISP_SHARE_BUF) {
-			buf_info->buf_put_count++;
-			if (buf_info->buf_put_count != ISP_SHARE_BUF_CLIENT) {
-				rc = buf_info->buf_put_count;
-				spin_unlock_irqrestore(&bufq->bufq_lock, flags);
-				return rc;
-			}
+	put_buf_mask = &bufq->put_buf_mask[pingpong_bit];
+
+	if (buf_index >= 0) {
+		buf_info = msm_isp_get_buf_ptr(buf_mgr, bufq_handle, buf_index);
+		if (!buf_info) {
+			pr_err("%s: buf not found\n", __func__);
+			return -EFAULT;
 		}
-	} else {
-		pr_warn("%s: Invalid state, stream id %x, state %d\n", __func__,
-			bufq->stream_id, state);
+		if (buf_info->state != MSM_ISP_BUFFER_STATE_DEQUEUED) {
+			pr_err(
+			"%s: Invalid state, bufq_handle %x stream id %x, state %d\n",
+			__func__, bufq_handle,
+			bufq->stream_id, buf_info->state);
+			return -EFAULT;
+		}
+		BUG_ON(buf_info->pingpong_bit != pingpong_bit);
+	}
+
+	if (bufq->buf_type != ISP_SHARE_BUF ||
+		(*put_buf_mask == 0)) {
+		if (buf_info)
+			buf_info->frame_id = frame_id;
+	}
+
+	if (bufq->buf_type == ISP_SHARE_BUF &&
+		((*put_buf_mask & (1 << id)) == 0)) {
+		*put_buf_mask |= (1 << id);
+		if (*put_buf_mask != ISP_SHARE_BUF_MASK) {
+			rc = *put_buf_mask;
+			return 1;
+		}
+		*put_buf_mask = 0;
+		rc = 0;
+	} else if (bufq->buf_type == ISP_SHARE_BUF &&
+		(*put_buf_mask & (1 << id)) != 0) {
+		return -ENOTEMPTY;
+	}
+
+	if (buf_info &&
+		MSM_ISP_BUFFER_SRC_NATIVE == BUF_SRC(bufq->stream_id)) {
+			buf_info->state = MSM_ISP_BUFFER_STATE_DIVERTED;
+			buf_info->tv = tv;
+	}
+	return 0;
+}
+
+static int msm_isp_update_put_buf_cnt(struct msm_isp_buf_mgr *buf_mgr,
+	uint32_t id, uint32_t bufq_handle, int32_t buf_index,
+	struct timeval *tv, uint32_t frame_id, uint32_t pingpong_bit)
+{
+	int rc = -1;
+	struct msm_isp_bufq *bufq = NULL;
+	unsigned long flags;
+
+	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
+	if (!bufq) {
+		pr_err("Invalid bufq\n");
+		return rc;
+	}
+
+	spin_lock_irqsave(&bufq->bufq_lock, flags);
+	rc = msm_isp_update_put_buf_cnt_unsafe(buf_mgr, id, bufq_handle,
+		buf_index, tv, frame_id, pingpong_bit);
+	if (-ENOTEMPTY == rc) {
+		pr_err("%s: Error! Uncleared put_buf_mask for pingpong(%d) from vfe %d bufq 0x%x buf_idx %d\n",
+			__func__, pingpong_bit, id, bufq_handle, buf_index);
+		rc = -EFAULT;
 	}
 	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
-	return 0;
+	return rc;
 }
 
 static int msm_isp_buf_done(struct msm_isp_buf_mgr *buf_mgr,
 	uint32_t bufq_handle, uint32_t buf_index,
 	struct timeval *tv, uint32_t frame_id, uint32_t output_format)
 {
-	int rc = -1;
+	int rc = 0;
 	unsigned long flags;
 	struct msm_isp_bufq *bufq = NULL;
 	struct msm_isp_buffer *buf_info = NULL;
@@ -693,49 +749,53 @@ static int msm_isp_buf_done(struct msm_isp_buf_mgr *buf_mgr,
 	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
 	if (!bufq) {
 		pr_err("Invalid bufq\n");
-		return rc;
+		return -EINVAL;
 	}
 
 	buf_info = msm_isp_get_buf_ptr(buf_mgr, bufq_handle, buf_index);
 	if (!buf_info) {
 		pr_err("%s: buf not found\n", __func__);
-		return rc;
+		return -EINVAL;
 	}
 
 	spin_lock_irqsave(&bufq->bufq_lock, flags);
 	state = buf_info->state;
-	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
 
-	if (state == MSM_ISP_BUFFER_STATE_DEQUEUED ||
-		state == MSM_ISP_BUFFER_STATE_DIVERTED) {
-		spin_lock_irqsave(&bufq->bufq_lock, flags);
-		buf_info->state = MSM_ISP_BUFFER_STATE_DISPATCHED;
-		spin_unlock_irqrestore(&bufq->bufq_lock, flags);
-		if (MSM_ISP_BUFFER_SRC_HAL == BUF_SRC(bufq->stream_id)) {
-			buf_info->vb2_buf->v4l2_buf.timestamp = *tv;
-			buf_info->vb2_buf->v4l2_buf.sequence  = frame_id;
-			buf_info->vb2_buf->v4l2_buf.reserved  = output_format;
+	if (MSM_ISP_BUFFER_SRC_HAL == BUF_SRC(bufq->stream_id)) {
+		if (state == MSM_ISP_BUFFER_STATE_DEQUEUED) {
+			buf_info->state = MSM_ISP_BUFFER_STATE_DISPATCHED;
+			spin_unlock_irqrestore(&bufq->bufq_lock, flags);
 			buf_mgr->vb2_ops->buf_done(buf_info->vb2_buf,
-				bufq->session_id, bufq->stream_id);
+				bufq->session_id, bufq->stream_id,
+				frame_id, tv, output_format);
 		} else {
-			pr_err("%s: Error wrong buf done %d\n", __func__,
-				state);
-			rc = msm_isp_put_buf(buf_mgr, buf_info->bufq_handle,
-						buf_info->buf_idx);
-			if (rc < 0) {
-				pr_err("%s: Buf put failed\n", __func__);
-				return rc;
-			}
+			spin_unlock_irqrestore(&bufq->bufq_lock, flags);
 		}
+		goto done;
 	}
 
-	return 0;
+	/*
+	 * For native buffer put the diverted buffer back to queue since caller
+	 * is not going to send it to CPP, this is error case like
+	 * drop_frame/empty_buffer
+	 */
+	if (state == MSM_ISP_BUFFER_STATE_DIVERTED) {
+		buf_info->state = MSM_ISP_BUFFER_STATE_PREPARED;
+		rc = msm_isp_put_buf_unsafe(buf_mgr, buf_info->bufq_handle,
+			buf_info->buf_idx);
+		if (rc < 0)
+			pr_err("%s: Buf put failed\n", __func__);
+	}
+	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
+done:
+	return rc;
 }
 
-static int msm_isp_flush_buf(struct msm_isp_buf_mgr *buf_mgr,
-		uint32_t bufq_handle, enum msm_isp_buffer_flush_t flush_type)
+static int msm_isp_flush_buf(struct msm_isp_buf_mgr *buf_mgr, uint32_t id,
+	uint32_t bufq_handle, enum msm_isp_buffer_flush_t flush_type,
+	struct timeval *tv, uint32_t frame_id)
 {
-	int rc = -1, i;
+	int rc = 0, i;
 	struct msm_isp_bufq *bufq = NULL;
 	struct msm_isp_buffer *buf_info = NULL;
 	unsigned long flags;
@@ -743,7 +803,7 @@ static int msm_isp_flush_buf(struct msm_isp_buf_mgr *buf_mgr,
 	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
 	if (!bufq) {
 		pr_err("Invalid bufq\n");
-		return rc;
+		return -EINVAL;
 	}
 
 	spin_lock_irqsave(&bufq->bufq_lock, flags);
@@ -755,72 +815,44 @@ static int msm_isp_flush_buf(struct msm_isp_buf_mgr *buf_mgr,
 		}
 		if (flush_type == MSM_ISP_BUFFER_FLUSH_DIVERTED &&
 			buf_info->state == MSM_ISP_BUFFER_STATE_DIVERTED) {
-			buf_info->state = MSM_ISP_BUFFER_STATE_QUEUED;
+			buf_info->state = MSM_ISP_BUFFER_STATE_PREPARED;
+			msm_isp_put_buf_unsafe(buf_mgr,
+					bufq_handle, buf_info->buf_idx);
 		} else if (flush_type == MSM_ISP_BUFFER_FLUSH_ALL) {
 			if (buf_info->state == MSM_ISP_BUFFER_STATE_DIVERTED) {
 				CDBG("%s: no need to queue Diverted buffer\n",
 					__func__);
 			} else if (buf_info->state ==
 				MSM_ISP_BUFFER_STATE_DEQUEUED) {
-				msm_isp_put_buf_unsafe(buf_mgr,
-					bufq_handle, buf_info->buf_idx);
+				rc = msm_isp_update_put_buf_cnt_unsafe(buf_mgr,
+					id, bufq_handle, buf_info->buf_idx, tv,
+					frame_id,  buf_info->pingpong_bit);
+				if (-ENOTEMPTY == rc) {
+					rc = 0;
+					continue;
+				}
+
+				if (rc == 0) {
+					buf_info->buf_debug.put_state[
+						buf_info->buf_debug.
+						put_state_last]
+						= MSM_ISP_BUFFER_STATE_FLUSH;
+					buf_info->buf_debug.put_state_last ^= 1;
+					buf_info->state =
+						MSM_ISP_BUFFER_STATE_PREPARED;
+					rc = msm_isp_put_buf_unsafe(buf_mgr,
+						bufq_handle, buf_info->buf_idx);
+					if (rc == -EFAULT) {
+						spin_unlock_irqrestore(
+							&bufq->bufq_lock,
+							flags);
+						return rc;
+					}
+				}
 			}
 		}
 	}
 
-	if (bufq->buf_type == ISP_SHARE_BUF) {
-		while (!list_empty(&bufq->share_head)) {
-			buf_info = list_entry((&bufq->share_head)->next,
-				typeof(*buf_info), share_list);
-			list_del(&(buf_info->share_list));
-			if (buf_info->buf_reuse_flag)
-				kfree(buf_info);
-		 }
-	}
-	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
-	return 0;
-}
-
-static int msm_isp_buf_divert(struct msm_isp_buf_mgr *buf_mgr,
-	uint32_t bufq_handle, uint32_t buf_index,
-	struct timeval *tv, uint32_t frame_id)
-{
-	int rc = -1;
-	struct msm_isp_bufq *bufq = NULL;
-	struct msm_isp_buffer *buf_info = NULL;
-	unsigned long flags;
-
-	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
-	if (!bufq) {
-		pr_err("Invalid bufq\n");
-		return rc;
-	}
-
-	buf_info = msm_isp_get_buf_ptr(buf_mgr, bufq_handle, buf_index);
-	if (!buf_info) {
-		pr_err("%s: buf not found\n", __func__);
-		return rc;
-	}
-
-	spin_lock_irqsave(&bufq->bufq_lock, flags);
-	if (bufq->buf_type != ISP_SHARE_BUF ||
-		buf_info->buf_put_count == 0) {
-		buf_info->frame_id = frame_id;
-	}
-
-	if (bufq->buf_type == ISP_SHARE_BUF) {
-		buf_info->buf_put_count++;
-		if (buf_info->buf_put_count != ISP_SHARE_BUF_CLIENT) {
-			rc = buf_info->buf_put_count;
-			spin_unlock_irqrestore(&bufq->bufq_lock, flags);
-			return rc;
-		}
-	}
-
-	if (buf_info->state == MSM_ISP_BUFFER_STATE_DEQUEUED) {
-		buf_info->state = MSM_ISP_BUFFER_STATE_DIVERTED;
-		buf_info->tv = tv;
-	}
 	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
 	return 0;
 }
@@ -828,7 +860,7 @@ static int msm_isp_buf_divert(struct msm_isp_buf_mgr *buf_mgr,
 static int msm_isp_buf_enqueue(struct msm_isp_buf_mgr *buf_mgr,
 	struct msm_isp_qbuf_info *info)
 {
-	int rc = -1, buf_state;
+	int rc = 0, buf_state;
 	struct msm_isp_bufq *bufq = NULL;
 	struct msm_isp_buffer *buf_info = NULL;
 
@@ -851,22 +883,43 @@ static int msm_isp_buf_enqueue(struct msm_isp_buf_mgr *buf_mgr,
 						info->handle, info->buf_idx);
 		if (!buf_info) {
 			pr_err("%s: buf not found\n", __func__);
-			return rc;
+			return -EINVAL;
 		}
 		if (info->dirty_buf) {
+			buf_info->buf_debug.put_state[
+				buf_info->buf_debug.put_state_last]
+				= MSM_ISP_BUFFER_STATE_PUT_BUF;
+			buf_info->buf_debug.put_state_last ^= 1;
+			buf_info->state = MSM_ISP_BUFFER_STATE_PREPARED;
 			rc = msm_isp_put_buf(buf_mgr,
 				info->handle, info->buf_idx);
 		} else {
 			if (BUF_SRC(bufq->stream_id))
 				pr_err("%s: Invalid native buffer state\n",
 					__func__);
-			else
+			else {
+				buf_info->buf_debug.put_state[
+					buf_info->buf_debug.put_state_last] =
+					MSM_ISP_BUFFER_STATE_PUT_BUF;
+				buf_info->buf_debug.put_state_last ^= 1;
 				rc = msm_isp_buf_done(buf_mgr,
 					info->handle, info->buf_idx,
 					buf_info->tv, buf_info->frame_id, 0);
+			}
 		}
 	} else {
 		if (MSM_ISP_BUFFER_SRC_HAL != BUF_SRC(bufq->stream_id)) {
+			buf_info = msm_isp_get_buf_ptr(buf_mgr,
+				info->handle, info->buf_idx);
+			if (!buf_info) {
+				pr_err("%s: buf not found\n", __func__);
+				return -EINVAL;
+			}
+
+			buf_info->buf_debug.put_state[
+				buf_info->buf_debug.put_state_last] =
+				MSM_ISP_BUFFER_STATE_PUT_PREPARED;
+			buf_info->buf_debug.put_state_last ^= 1;
 			rc = msm_isp_put_buf(buf_mgr,
 					info->handle, info->buf_idx);
 			if (rc < 0) {
@@ -876,7 +929,7 @@ static int msm_isp_buf_enqueue(struct msm_isp_buf_mgr *buf_mgr,
 			}
 		}
 	}
-	return rc;
+	return 0;
 }
 
 static int msm_isp_buf_dequeue(struct msm_isp_buf_mgr *buf_mgr,
@@ -937,20 +990,20 @@ static int msm_isp_get_buf_src(struct msm_isp_buf_mgr *buf_mgr,
 static int msm_isp_request_bufq(struct msm_isp_buf_mgr *buf_mgr,
 	struct msm_isp_buf_request *buf_request)
 {
-	int rc = -1, i;
+	int i;
 	struct msm_isp_bufq *bufq = NULL;
 	CDBG("%s: E\n", __func__);
 
 	if (!buf_request->num_buf || buf_request->num_buf > VB2_MAX_FRAME) {
 		pr_err("Invalid buffer request\n");
-		return rc;
+		return -EINVAL;
 	}
 
 	buf_request->handle = msm_isp_get_buf_handle(buf_mgr,
 		buf_request->session_id, buf_request->stream_id);
 	if (!buf_request->handle) {
 		pr_err("Invalid buffer handle\n");
-		return rc;
+		return -EINVAL;
 	}
 
 	bufq = msm_isp_get_bufq(buf_mgr, buf_request->handle);
@@ -958,7 +1011,7 @@ static int msm_isp_request_bufq(struct msm_isp_buf_mgr *buf_mgr,
 		pr_err("%s: Invalid bufq stream_id %x\n",
 			__func__, buf_request->stream_id);
 
-		return rc;
+		return -EINVAL;
 	}
 
 	bufq->bufs = kzalloc(sizeof(struct msm_isp_buffer) *
@@ -966,22 +1019,30 @@ static int msm_isp_request_bufq(struct msm_isp_buf_mgr *buf_mgr,
 	if (!bufq->bufs) {
 		pr_err("No free memory for buf info\n");
 		msm_isp_free_bufq_handle(buf_mgr, buf_request->handle);
-		return rc;
+		return -ENOMEM;
 	}
+
+	spin_lock_init(&bufq->bufq_lock); /* LGE_CHANGE, fix kernel crash by spinlock bad magic , 2015-10-03, jaehan.jeong@lge.com */
 
 	bufq->bufq_handle = buf_request->handle;
 	bufq->session_id = buf_request->session_id;
 	bufq->stream_id = buf_request->stream_id;
 	bufq->num_bufs = buf_request->num_buf;
 	bufq->buf_type = buf_request->buf_type;
-	if (bufq->buf_type == ISP_SHARE_BUF)
-		bufq->buf_client_count = ISP_SHARE_BUF_CLIENT;
+	for (i = 0; i < ISP_NUM_BUF_MASK; i++)
+		bufq->put_buf_mask[i] = 0;
 	INIT_LIST_HEAD(&bufq->head);
-	INIT_LIST_HEAD(&bufq->share_head);
+
 	for (i = 0; i < buf_request->num_buf; i++) {
 		bufq->bufs[i].state = MSM_ISP_BUFFER_STATE_INITIALIZED;
+		bufq->bufs[i].buf_debug.put_state[0] =
+			MSM_ISP_BUFFER_STATE_PUT_PREPARED;
+		bufq->bufs[i].buf_debug.put_state[1] =
+			MSM_ISP_BUFFER_STATE_PUT_PREPARED;
+		bufq->bufs[i].buf_debug.put_state_last = 0;
 		bufq->bufs[i].bufq_handle = bufq->bufq_handle;
 		bufq->bufs[i].buf_idx = i;
+		INIT_LIST_HEAD(&bufq->bufs[i].list);
 	}
 
 	return 0;
@@ -992,11 +1053,10 @@ static int msm_isp_release_bufq(struct msm_isp_buf_mgr *buf_mgr,
 {
 	struct msm_isp_bufq *bufq = NULL;
 	unsigned long flags;
-	int rc = -1;
 	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
 	if (!bufq) {
 		pr_err("Invalid bufq release\n");
-		return rc;
+		return -EINVAL;
 	}
 
 	msm_isp_buf_unprepare_all(buf_mgr, bufq_handle);
@@ -1211,22 +1271,32 @@ int msm_isp_proc_buf_cmd(struct msm_isp_buf_mgr *buf_mgr,
 	switch (cmd) {
 	case VIDIOC_MSM_ISP_REQUEST_BUF: {
 		struct msm_isp_buf_request *buf_req = arg;
+
 		buf_mgr->ops->request_buf(buf_mgr, buf_req);
 		break;
 	}
 	case VIDIOC_MSM_ISP_ENQUEUE_BUF: {
 		struct msm_isp_qbuf_info *qbuf_info = arg;
+
 		buf_mgr->ops->enqueue_buf(buf_mgr, qbuf_info);
 		break;
 	}
 	case VIDIOC_MSM_ISP_DEQUEUE_BUF: {
 		struct msm_isp_qbuf_info *qbuf_info = arg;
+
 		buf_mgr->ops->dequeue_buf(buf_mgr, qbuf_info);
 		break;
 	}
 	case VIDIOC_MSM_ISP_RELEASE_BUF: {
 		struct msm_isp_buf_request *buf_req = arg;
+
 		buf_mgr->ops->release_buf(buf_mgr, buf_req->handle);
+		break;
+	}
+	case VIDIOC_MSM_ISP_UNMAP_BUF: {
+		struct msm_isp_unmap_buf_req *unmap_req = arg;
+
+		buf_mgr->ops->unmap_buf(buf_mgr, unmap_req->fd);
 		break;
 	}
 	}
@@ -1369,10 +1439,11 @@ static struct msm_isp_buf_ops isp_buf_ops = {
 	.get_buf_src = msm_isp_get_buf_src,
 	.get_buf = msm_isp_get_buf,
 	.get_buf_by_index = msm_isp_get_buf_by_index,
+	.map_buf = msm_isp_map_buf,
+	.unmap_buf = msm_isp_unmap_buf,
 	.put_buf = msm_isp_put_buf,
 	.flush_buf = msm_isp_flush_buf,
 	.buf_done = msm_isp_buf_done,
-	.buf_divert = msm_isp_buf_divert,
 	.buf_mgr_init = msm_isp_init_isp_buf_mgr,
 	.buf_mgr_deinit = msm_isp_deinit_isp_buf_mgr,
 	.buf_mgr_debug = msm_isp_buf_mgr_debug,

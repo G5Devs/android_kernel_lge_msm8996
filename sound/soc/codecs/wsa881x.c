@@ -35,6 +35,11 @@
 #include "wsa881x.h"
 #include "wsa881x-temp-sensor.h"
 
+#ifdef CONFIG_MACH_LGE
+#include <soc/qcom/lge/board_lge.h>
+#endif
+#define WSA881X_NUM_RETRY	5
+
 enum {
 	G_18DB = 0,
 	G_16P5DB,
@@ -112,6 +117,12 @@ struct wsa881x_priv {
 #define WSA881X_VERSION_ENTRY_SIZE 27
 #define WSA881X_OCP_CTL_TIMER_SEC 2
 #define WSA881X_OCP_CTL_TEMP_CELSIUS 25
+#define WSA881X_OCP_CTL_POLL_TIMER_SEC 60
+
+static int wsa881x_ocp_poll_timer_sec = WSA881X_OCP_CTL_POLL_TIMER_SEC;
+module_param(wsa881x_ocp_poll_timer_sec, int,
+		S_IRUGO | S_IWUSR | S_IWGRP);
+MODULE_PARM_DESC(wsa881x_ocp_poll_timer_sec, "timer for ocp ctl polling");
 
 static struct wsa881x_priv *dbgwsa881x;
 static struct dentry *debugfs_wsa881x_dent;
@@ -762,6 +773,9 @@ static void wsa881x_ocp_ctl_work(struct work_struct *work)
 		snd_soc_update_bits(codec, WSA881X_SPKR_OCP_CTL, 0xC0, 0x00);
 	else
 		snd_soc_update_bits(codec, WSA881X_SPKR_OCP_CTL, 0xC0, 0xC0);
+
+	schedule_delayed_work(&wsa881x->ocp_ctl_work,
+			msecs_to_jiffies(wsa881x_ocp_poll_timer_sec * 1000));
 }
 
 static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
@@ -785,12 +799,15 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 		break;
 	case SND_SOC_DAPM_POST_PMU:
 		if (WSA881X_IS_2_0(wsa881x->version)) {
-			/*
-			 * 1ms delay is needed before change in gain as per
-			 * HW requirement.
-			 */
-			usleep_range(1000, 1010);
-			wsa881x_ramp_pa_gain(codec, G_13P5DB, G_18DB, 1000);
+			if (!wsa881x->comp_enable) {
+				/*
+				 * 1ms delay is needed before change in gain
+				 * as per HW requirement.
+				 */
+				usleep_range(1000, 1010);
+				wsa881x_ramp_pa_gain(codec, G_13P5DB, G_18DB,
+						     1000);
+			}
 		} else {
 			/*
 			 * 710us delay is needed after PA enable as per
@@ -800,12 +817,15 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 			regmap_multi_reg_write(wsa881x->regmap,
 					       wsa881x_post_pmu_pa,
 					       ARRAY_SIZE(wsa881x_post_pmu_pa));
-			/*
-			 * 1ms delay is needed before change in gain as per
-			 * HW requirement.
-			 */
-			usleep_range(1000, 1010);
-			wsa881x_ramp_pa_gain(codec, G_12DB, G_13P5DB, 1000);
+			if (!wsa881x->comp_enable) {
+				/*
+				 * 1ms delay is needed before change in gain
+				 * as per HW requirement.
+				 */
+				usleep_range(1000, 1010);
+				wsa881x_ramp_pa_gain(codec, G_12DB, G_13P5DB,
+						     1000);
+			}
 			snd_soc_update_bits(codec, WSA881X_ADC_SEL_IBIAS,
 					    0x70, 0x40);
 		}
@@ -893,9 +913,13 @@ static void wsa881x_init(struct snd_soc_codec *codec)
 	snd_soc_update_bits(codec, WSA881X_CDC_RST_CTL, 0x01, 0x01);
 
 	if (WSA881X_IS_2_0(wsa881x->version)) {
+		dev_info(codec->dev, "%s: WSA881X_IS_2_0\n", __func__);
+		snd_soc_update_bits(codec, WSA881X_CLOCK_CONFIG, 0x10, 0x10);
+		snd_soc_update_bits(codec, WSA881X_SPKR_OCP_CTL, 0x02, 0x02);
 		snd_soc_update_bits(codec, WSA881X_SPKR_MISC_CTL1, 0xC0, 0x80);
 		snd_soc_update_bits(codec, WSA881X_SPKR_MISC_CTL1, 0x06, 0x06);
-		snd_soc_update_bits(codec, WSA881X_SPKR_PA_INT, 0xF0, 0x20);
+		snd_soc_update_bits(codec, WSA881X_SPKR_BIAS_INT, 0xFF, 0x00);
+		snd_soc_update_bits(codec, WSA881X_SPKR_PA_INT, 0xF0, 0x40);
 		snd_soc_update_bits(codec, WSA881X_SPKR_PA_INT, 0x0E, 0x0E);
 		snd_soc_update_bits(codec, WSA881X_BOOST_LOOP_STABILITY,
 				    0x03, 0x03);
@@ -906,8 +930,11 @@ static void wsa881x_init(struct snd_soc_codec *codec)
 				    0x0C, 0x04);
 		snd_soc_update_bits(codec, WSA881X_BOOST_SLOPE_COMP_ISENSE_FB,
 				    0x03, 0x00);
+		snd_soc_update_bits(codec, WSA881X_BOOST_PRESET_OUT1,
+				    0xF0, 0x70);
+		snd_soc_update_bits(codec, WSA881X_BOOST_PRESET_OUT2,
+				    0xF0, 0x30);
 		snd_soc_update_bits(codec, WSA881X_SPKR_DRV_EN, 0x08, 0x08);
-		snd_soc_update_bits(codec, WSA881X_BOOST_PS_CTL, 0x80, 0x00);
 		snd_soc_update_bits(codec, WSA881X_BOOST_CURRENT_LIMIT,
 				    0x0F, 0x08);
 		snd_soc_update_bits(codec, WSA881X_SPKR_OCP_CTL, 0x30, 0x30);
@@ -918,6 +945,7 @@ static void wsa881x_init(struct snd_soc_codec *codec)
 		snd_soc_update_bits(codec, WSA881X_BONGO_RESRV_REG2,
 				    0xFF, 0x05);
 	} else {
+		dev_info(codec->dev, "%s: WSA881X_IS_NOT_2_0\n", __func__);
 		/* Set DAC polarity to Rising */
 		snd_soc_update_bits(codec, WSA881X_SPKR_DAC_CTL, 0x02, 0x02);
 		/* set Bias Ref ctrl to 1.225V */
@@ -968,7 +996,13 @@ static int32_t wsa881x_temp_reg_read(struct snd_soc_codec *codec,
 			return -EINVAL;
 		}
 	}
-	regcache_sync(wsa881x->regmap);
+	mutex_lock(&wsa881x->res_lock);
+	if (!wsa881x->clk_cnt) {
+		regcache_mark_dirty(wsa881x->regmap);
+		regcache_sync(wsa881x->regmap);
+	}
+	mutex_unlock(&wsa881x->res_lock);
+
 	wsa881x_resource_acquire(codec, ENABLE);
 
 	if (WSA881X_IS_2_0(wsa881x->version)) {
@@ -987,7 +1021,6 @@ static int32_t wsa881x_temp_reg_read(struct snd_soc_codec *codec,
 	wsa_temp_reg->d2_msb = snd_soc_read(codec, WSA881X_OTP_REG_3);
 	wsa_temp_reg->d2_lsb = snd_soc_read(codec, WSA881X_OTP_REG_4);
 
-	snd_soc_update_bits(codec, WSA881X_TEMP_OP, 0x04, 0x00);
 	wsa881x_resource_acquire(codec, DISABLE);
 
 	return 0;
@@ -1005,6 +1038,9 @@ static int wsa881x_probe(struct snd_soc_codec *codec)
 	wsa881x->codec = codec;
 	mutex_init(&wsa881x->bg_lock);
 	mutex_init(&wsa881x->res_lock);
+#ifdef CONFIG_MACH_LGE
+	swr_wakeup_soundwire_master(dev);
+#endif
 	wsa881x_init(codec);
 	snprintf(wsa881x->tz_pdata.name, sizeof(wsa881x->tz_pdata.name),
 		"%s.%x", "wsatz", (u8)dev->addr);
@@ -1240,7 +1276,15 @@ static int wsa881x_swr_down(struct swr_device *pdev)
 		dev_err(&pdev->dev, "%s: wsa881x is NULL\n", __func__);
 		return -EINVAL;
 	}
-	regcache_mark_dirty(wsa881x->regmap);
+#ifdef CONFIG_MACH_LGE
+	if (wsa881x->state == WSA881X_DEV_UP) {
+		cancel_delayed_work_sync(&wsa881x->ocp_ctl_work);
+	} else {
+		dev_err(&pdev->dev, "%s: do not cancel in WSA881X_DEV_DOWN status\n", __func__);
+	}
+#else
+	cancel_delayed_work_sync(&wsa881x->ocp_ctl_work);
+#endif
 	ret = wsa881x_gpio_ctrl(wsa881x, false);
 	if (ret)
 		dev_err(&pdev->dev, "%s: Failed to disable gpio\n", __func__);
@@ -1253,6 +1297,8 @@ static int wsa881x_swr_down(struct swr_device *pdev)
 static int wsa881x_swr_reset(struct swr_device *pdev)
 {
 	struct wsa881x_priv *wsa881x;
+	u8 retry = WSA881X_NUM_RETRY;
+	u8 devnum = 0;
 
 	wsa881x = swr_get_dev_data(pdev);
 	if (!wsa881x) {
@@ -1261,6 +1307,11 @@ static int wsa881x_swr_reset(struct swr_device *pdev)
 	}
 	wsa881x->bg_cnt = 0;
 	wsa881x->clk_cnt = 0;
+	while (swr_get_logical_dev_num(pdev, pdev->addr, &devnum) && retry--) {
+		/* Retry after 1 msec delay */
+		usleep_range(1000, 1100);
+	}
+	regcache_mark_dirty(wsa881x->regmap);
 	regcache_sync(wsa881x->regmap);
 	return 0;
 }
