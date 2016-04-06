@@ -63,12 +63,11 @@ enum {
 };
 
 enum {
-	DPC_FLAT_STATIC = 4,	/* NOT_IN_HAND */
-	DPC_ANGLE_STATIC = 5,	/* NOT_IN_HAND */
-	DPC_HIDDEN_STATE = 6,	/* NOT_IN_HAND */
-	DPC_IN_HAND = 7,	/* IN_HAND */
-	DPC_FACING = 11,	/* IN_HAND */
-	DPC_UNKNOWN = 12,	/* NOT_IN_HAND */
+	DPC_UNKNOWN = 0,	/* NOT_IN_HAND */
+	DPC_FLAT_STATIC = 1,	/* NOT_IN_HAND */
+	DPC_HIDDEN = 2,		/* NOT_IN_HAND */
+	DPC_IN_HAND = 3,	/* IN_HAND */
+	DPC_FACING = 4,		/* IN_HAND */
 };
 
 struct lg4946_asc_info {

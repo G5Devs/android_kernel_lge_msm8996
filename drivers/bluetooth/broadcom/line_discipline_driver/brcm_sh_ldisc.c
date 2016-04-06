@@ -152,6 +152,10 @@ static unsigned long jiffi1, jiffi2;
 struct mutex cmd_credit;
 //BRCM [CSP#1015167]
 
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+struct mutex mutex_boot_progress;
+// BRCM_LOCAL [CSP#1018143]
+
 /* setting custom baudrate received from UIM */
 struct ktermios ktermios;
 static unsigned char bd_addr_array[6] = {0};
@@ -798,12 +802,19 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
     unsigned long flags, diff;
     struct hci_uart *hu;
 
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+    mutex_lock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
+
     hu_ref(&hu, 0);
     BT_LDISC_DBG(V4L2_DBG_OPEN, "%p",hu);
 //BT_S CSP#977391 H1 WBT ISSUE
     if(new_proto == NULL)
     {
         pr_err("new_proto is NULL");
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+        mutex_unlock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
         return -EINVAL;
     }
 //BT_E CSP#977391 H1 WBT ISSUE
@@ -830,6 +841,9 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
             if ( ((diff *1000)/HZ) >= 1000)
                 is_print_reg_error = 1;
         }
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+        mutex_unlock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
         return -1;
     }
 
@@ -838,6 +852,9 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
     {
         spin_unlock_irqrestore(&reg_lock, flags);
         pr_err("protocol %d not supported", new_proto->type);
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+        mutex_unlock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
         return -EPROTONOSUPPORT;
     }
 
@@ -846,6 +863,9 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
     {
         spin_unlock_irqrestore(&reg_lock, flags);
         BT_LDISC_DBG(V4L2_DBG_OPEN, "protocol %d already registered", new_proto->type);
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+        mutex_unlock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
         return -EALREADY;
     }
     if (test_bit(LDISC_REG_IN_PROGRESS, &hu->sh_ldisc_state)) {
@@ -858,6 +878,9 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
 
         set_bit(LDISC_REG_PENDING, &hu->sh_ldisc_state);
         spin_unlock_irqrestore(&reg_lock, flags);
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+        mutex_unlock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]        
         return -EINPROGRESS;
     } else if (hu->protos_registered == LDISC_EMPTY) {
         BT_LDISC_DBG(V4L2_DBG_OPEN, " chnl_id list empty :%d ", new_proto->type);
@@ -874,6 +897,9 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
                 (test_bit(LDISC_REG_PENDING, &hu->sh_ldisc_state))) {
                 pr_err(" ldisc registration failed ");
             }
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+            mutex_unlock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
             return -EINVAL;
         }
 
@@ -888,6 +914,9 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
         if (hu->is_registered[new_proto->type] == true) {
             pr_err(" proto %d already registered ",
                    new_proto->type);
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+            mutex_unlock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
             return -EALREADY;
         }
 
@@ -901,6 +930,9 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
         spin_unlock_irqrestore(&reg_lock, flags);
 
         BT_LDISC_DBG(V4L2_DBG_OPEN, "exiting %s with err = %ld", __func__, err);
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+        mutex_unlock(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
         return err;
     }
     /* if firmware patchram is already downloaded & new protocol driver registers */
@@ -911,6 +943,9 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
                                                       hu->protos_registered);
         new_proto->write = brcm_sh_ldisc_write;
         spin_unlock_irqrestore(&reg_lock, flags);
+        // BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+        mutex_unlock(&mutex_boot_progress);
+        // BRCM_LOCAL [CSP#1018143]        
 
         return err;
     }
@@ -2130,6 +2165,10 @@ static int __init bcmbt_ldisc_init(void)
     mutex_init(&cmd_credit);
 //BRCM [CSP#1015167]
 
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+    mutex_init(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
+
 #if V4L2_SNOOP_ENABLE
     if(ldisc_snoop_enable_param)
     {
@@ -2168,6 +2207,10 @@ static void __exit bcmbt_ldisc_exit(void)
 //BRCM [CSP#1015167] : Kernel crash caused by BT chip reset
     mutex_destroy(&cmd_credit);
 //BRCM [CSP#1015167]
+
+// BRCM_LOCAL [CSP#1018143] : Cannot radio0 open
+    mutex_destroy(&mutex_boot_progress);
+// BRCM_LOCAL [CSP#1018143]
 
 #if V4L2_SNOOP_ENABLE
     if(ldisc_snoop_enable_param)

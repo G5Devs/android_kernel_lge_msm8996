@@ -25,6 +25,8 @@
 
 #if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
 #include <soc/qcom/lge/board_lge.h>
+extern int panel_not_connected;
+int detect_factory_cable(void);
 #endif
 
 #if defined(CONFIG_LGE_PP_AD_SUPPORTED)
@@ -48,7 +50,6 @@ int cmd_num;
 #endif
 
 #if defined(CONFIG_LGE_LCD_DYNAMIC_CABC_MIE_CTRL)
-unsigned int ie_set;
 unsigned int cabc_ctrl;
 #endif
 
@@ -786,7 +787,16 @@ static DEVICE_ATTR(color_enhance, S_IWUSR|S_IRUGO, color_enhancement_get, color_
 static ssize_t image_enhance_get(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%d\n", ie_set);
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	if(pdata_base == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+	ctrl =  container_of(pdata_base, struct mdss_dsi_ctrl_pdata,
+			panel_data);
+
+	return sprintf(buf, "%d\n", ctrl->ie_on);
 }
 
 static ssize_t image_enhance_set(struct device *dev,
@@ -808,18 +818,18 @@ static ssize_t image_enhance_set(struct device *dev,
 	ctrl =  container_of(pdata_base, struct mdss_dsi_ctrl_pdata,
 			panel_data);
 
-	sscanf(buf, "%d", &ie_set);
+	sscanf(buf, "%d", &ctrl->ie_on);
 
-	if(ie_set == 1){
+	if(ctrl->ie_on == 1){
 		mdss_dsi_panel_cmds_send(ctrl, &ctrl->ie_on_cmds, CMD_REQ_COMMIT);
-		pr_info("%s: set = %d, image enhance function on\n", __func__, ie_set);
+		pr_info("%s: set = %d, image enhance function on\n", __func__, ctrl->ie_on);
 	}
-	else if(ie_set == 0){
+	else if(ctrl->ie_on == 0){
 		mdss_dsi_panel_cmds_send(ctrl, &ctrl->ie_off_cmds, CMD_REQ_COMMIT);
-		pr_info("%s: set = %d, image enhance funtion off\n", __func__, ie_set);
+		pr_info("%s: set = %d, image enhance funtion off\n", __func__, ctrl->ie_on);
 	}
 	else
-		pr_info("%s: set = %d, wrong set value\n", __func__, ie_set);
+		pr_info("%s: set = %d, wrong set value\n", __func__, ctrl->ie_on);
 
 	return ret;
 }
@@ -1132,6 +1142,15 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 #endif
 		if (on_cmds->cmd_cnt)
 			mdss_dsi_panel_cmds_send(ctrl, on_cmds, CMD_REQ_COMMIT);
+
+#if defined(CONFIG_LGE_LCD_DYNAMIC_CABC_MIE_CTRL)
+		if (ctrl->ie_on == 0)
+			mdss_dsi_panel_cmds_send(ctrl, &ctrl->ie_off_cmds, CMD_REQ_COMMIT);
+#endif
+#if defined(CONFIG_LGE_ENHANCE_GALLERY_SHARPNESS)
+		if (ctrl->sharpness_on_cmds.cmds[2].payload[3] == 0x23)
+			mdss_dsi_panel_cmds_send(ctrl, &ctrl->sharpness_on_cmds, CMD_REQ_COMMIT);
+#endif
 		goto end;
 	case ON_CMD:
 		break;
@@ -1154,6 +1173,15 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 		mdss_dsi_panel_cmds_send(ctrl, on_cmds, CMD_REQ_COMMIT);
 	if (pinfo->compression_mode == COMPRESSION_DSC)
 		mdss_dsi_panel_dsc_pps_send(ctrl, pinfo);
+
+#if defined(CONFIG_LGE_LCD_DYNAMIC_CABC_MIE_CTRL)
+	if (ctrl->ie_on == 0)
+		mdss_dsi_panel_cmds_send(ctrl, &ctrl->ie_off_cmds, CMD_REQ_COMMIT);
+#endif
+#if defined(CONFIG_LGE_ENHANCE_GALLERY_SHARPNESS)
+	if (ctrl->sharpness_on_cmds.cmds[2].payload[3] == 0x23)
+		mdss_dsi_panel_cmds_send(ctrl, &ctrl->sharpness_on_cmds, CMD_REQ_COMMIT);
+#endif
 
 #if defined(CONFIG_LGE_DISPLAY_AOD_SUPPORTED)
 notify:
@@ -3214,7 +3242,7 @@ int mdss_dsi_panel_init(struct device_node *node,
 	pinfo->is_lpm_mode = false;
 	pinfo->esd_rdy = false;
 #ifdef CONFIG_LGE_LCD_MFTS_MODE
-	if(lge_get_mfts_mode())
+	if (lge_get_mfts_mode() || (detect_factory_cable() && panel_not_connected))
 		pinfo->power_ctrl = true;
 #endif
 	ctrl_pdata->on = mdss_dsi_panel_on;
@@ -3223,6 +3251,9 @@ int mdss_dsi_panel_init(struct device_node *node,
 	ctrl_pdata->low_power_config = mdss_dsi_panel_low_power_config;
 	ctrl_pdata->panel_data.set_backlight = mdss_dsi_panel_bl_ctrl;
 	ctrl_pdata->switch_mode = mdss_dsi_panel_switch_mode;
+#if defined(CONFIG_LGE_LCD_DYNAMIC_CABC_MIE_CTRL)
+	ctrl_pdata->ie_on = 1;
+#endif
 #if defined(CONFIG_LGE_DISPLAY_AOD_SUPPORTED)
 	/* Only parse aod command in DSI0 ctrl */
 	if (ctrl_pdata->panel_data.panel_info.pdest == DISPLAY_1) {

@@ -938,7 +938,7 @@
 						   "cdc-vddpx-1";
 
 			qcom,cdc-micbias1-mv = <1800>;
-			qcom,cdc-micbias2-mv = <2200>;
+			qcom,cdc-micbias2-mv = <2000>;
 			qcom,cdc-micbias3-mv = <1800>;
 			qcom,cdc-micbias4-mv = <1800>;
 
@@ -2466,7 +2466,6 @@
 			 <&clock_gcc clk_gcc_ce1_ahb_m_clk>,
 			 <&clock_gcc clk_gcc_ce1_axi_m_clk>;
 		qcom,ce-opp-freq = <171430000>;
-		qcom,qsee-reentrancy-support = <2>;
 	};
 
 	qcom,qbt1000 {

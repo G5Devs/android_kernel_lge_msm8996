@@ -21,7 +21,6 @@ struct anx7418_charger {
 	int ctype_charger;
 
 	struct delayed_work chg_work;
-	struct work_struct otg_work;
 };
 
 int anx7418_charger_init(struct anx7418 *anx);

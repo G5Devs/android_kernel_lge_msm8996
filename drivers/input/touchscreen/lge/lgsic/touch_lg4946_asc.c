@@ -484,10 +484,9 @@ static ssize_t store_lg4946_asc_onhand(struct device *dev, const char *buf,
 		return count;
 
 	switch (value) {
-	case DPC_FLAT_STATIC:
-	case DPC_ANGLE_STATIC:
-	case DPC_HIDDEN_STATE:
 	case DPC_UNKNOWN:
+	case DPC_FLAT_STATIC:
+	case DPC_HIDDEN:
 		value = NOT_IN_HAND;
 		break;
 	case DPC_IN_HAND:

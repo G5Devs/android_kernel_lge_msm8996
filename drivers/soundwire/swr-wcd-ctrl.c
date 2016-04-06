@@ -1417,7 +1417,8 @@ int swrm_wcd_notify(struct platform_device *pdev, u32 id, void *data)
 		mutex_lock(&swrm->reslock);
 		if ((swrm->state == SWR_MSTR_RESUME) ||
 		    (swrm->state == SWR_MSTR_UP)) {
-			dev_dbg(swrm->dev, "%s: SWR master is already UP: %d\n",
+			pm_runtime_mark_last_busy(&pdev->dev);
+			dev_dbg(swrm->dev, "%s: SWR master is already UP: %d, Just call pm_runtime_mark_last_busy\n",
 				__func__, swrm->state);
 		} else {
 			mutex_unlock(&swrm->reslock);

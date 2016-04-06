@@ -140,7 +140,7 @@ struct mdp_csc_cfg mdp_csc_8bit_convert[MDSS_MDP_MAX_CSC] = {
 
 #if defined(CONFIG_LGE_BROADCAST_TDMB) || defined(CONFIG_LGE_BROADCAST_ISDBT_JAPAN)
 struct mdp_csc_cfg dmb_csc_convert = {
-#if defined(CONFIG_MACH_MSM8992_P1_KR) || defined(CONFIG_MACH_MSM8992_PPLUS_KR) || defined(CONFIG_MACH_MSM8992_P1A4WP_KR)
+#if defined(CONFIG_MACH_MSM8992_P1_KR) || defined(CONFIG_MACH_MSM8992_PPLUS_KR) || defined(CONFIG_MACH_MSM8992_P1A4WP_KR) || defined(CONFIG_MACH_MSM8996_H1_KR)
 	0,
 	{
 		0x0236, 0x0000, 0x0331,	/*283*/
@@ -1053,6 +1053,7 @@ static int pp_vig_pipe_setup(struct mdss_mdp_pipe *pipe, u32 *op)
 		 * is a previously configured pipe need to re-configure
 		 * CSC matrix
 		 */
+#if !defined(CONFIG_LGE_BROADCAST_TDMB)		 
 		#if !defined(CONFIG_LGE_CAM_PREVIEW_TUNE)
 			mdss_mdp_csc_setup(MDSS_MDP_BLOCK_SSPP, pipe->num,
 				   pp_vig_csc_pipe_val(pipe));
@@ -1065,6 +1066,26 @@ static int pp_vig_pipe_setup(struct mdss_mdp_pipe *pipe, u32 *op)
 					pp_vig_csc_pipe_val(pipe));
 			}
 		#endif
+#else
+#if !defined(CONFIG_LGE_CAM_PREVIEW_TUNE)
+		if(dmb_status == 1) {
+			mdss_mdp_csc_setup_data(MDSS_MDP_BLOCK_SSPP, pipe->num, &dmb_csc_convert);
+		} else {
+			mdss_mdp_csc_setup(MDSS_MDP_BLOCK_SSPP, pipe->num, pp_vig_csc_pipe_val(pipe));
+		}
+#else
+		if(dmb_status == 1) {
+			mdss_mdp_csc_setup_data(MDSS_MDP_BLOCK_SSPP, pipe->num, &dmb_csc_convert);
+		} else {
+			if(cam_preview_tune_status == 1) {
+				mdss_mdp_csc_setup_data(MDSS_MDP_BLOCK_SSPP, pipe->num, &mdp_csc_convert_wideband);
+			} else {
+				mdss_mdp_csc_setup(MDSS_MDP_BLOCK_SSPP, pipe->num, pp_vig_csc_pipe_val(pipe));
+			}
+		}
+#endif
+#endif /* LGE_BROADCAST */
+
 	}
 
 	/* Update CSC state only if tuning mode is enable */

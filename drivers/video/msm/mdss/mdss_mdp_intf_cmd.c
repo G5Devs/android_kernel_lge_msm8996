@@ -21,6 +21,7 @@
 #include "mdss_dsi_clk.h"
 #if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
 #include <linux/input/lge_touch_notify.h>
+#include <soc/qcom/lge/board_lge.h>
 #endif
 
 #define MAX_RECOVERY_TRIALS 10
@@ -35,6 +36,7 @@
 
 #if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
 extern int panel_not_connected;
+extern int skip_lcd_error_check;
 #endif
 
 static DEFINE_MUTEX(cmd_clk_mtx);
@@ -964,6 +966,7 @@ static void mdss_mdp_cmd_pingpong_done(void *arg)
 	struct mdss_mdp_vsync_handler *tmp;
 	ktime_t vsync_time;
 	u32 pp_num;
+	int sppdone = 0;
 
 	if (!ctx) {
 		pr_err("%s: invalid ctx\n", __func__);
@@ -988,11 +991,13 @@ static void mdss_mdp_cmd_pingpong_done(void *arg)
 
 	MDSS_XLOG(ctl->num, atomic_read(&ctx->koff_cnt), pp_num);
 
+	sppdone = mdss_mdp_cmd_do_notifier(ctx);
+
 	if (atomic_add_unless(&ctx->koff_cnt, -1, 0)) {
 		if (atomic_read(&ctx->koff_cnt))
 			pr_err("%s: too many kickoffs=%d!\n", __func__,
 			       atomic_read(&ctx->koff_cnt));
-		if (mdss_mdp_cmd_do_notifier(ctx)) {
+		if (sppdone) {
 			atomic_inc(&ctx->pp_done_cnt);
 			schedule_work(&ctx->pp_done_work);
 
@@ -1493,9 +1498,27 @@ static int mdss_mdp_cmd_wait4pingpong(struct mdss_mdp_ctl *ctl, void *arg)
                                __func__,
                                ctl->num, rc, ctx->pp_timeout_report_cnt);
 #if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
-		if (touch_notifier_call_chain(LCD_EVENT_READ_REG, NULL))
-			pr_err("Failt to send notify to touch\n");
-		mdss_fb_report_panel_dead(ctl->mfd);
+		if (lge_get_panel_revision_id() <= LGD_LG4946_REV1){
+			if (touch_notifier_call_chain(LCD_EVENT_READ_REG, NULL))
+				pr_err("Failt to send notify to touch\n");
+			mdss_fb_report_panel_dead(ctl->mfd);
+		}
+		else{
+			if (ctx->pp_timeout_report_cnt == 0) {
+					WARN(1, "mdss_mdp_cmd_wait4pingpong timed out: rc=%d, ctl=%d\n", rc, ctl->num);
+					MDSS_XLOG(0xbad);
+					MDSS_XLOG_TOUT_HANDLER("mdp", "dsi0_ctrl", "dsi0_phy",
+						"dsi1_ctrl", "dsi1_phy", "vbif", "vbif_nrt",
+						"dbg_bus", "vbif_dbg_bus", "panic");
+				} else if (ctx->pp_timeout_report_cnt == MAX_RECOVERY_TRIALS) {
+					MDSS_XLOG(0xbad2);
+					MDSS_XLOG_TOUT_HANDLER("mdp", "dsi0_ctrl", "dsi0_phy",
+						"dsi1_ctrl", "dsi1_phy", "vbif", "vbif_nrt",
+						"dbg_bus", "vbif_dbg_bus", "panic");
+					mdss_fb_report_panel_dead(ctl->mfd);
+				}
+				ctx->pp_timeout_report_cnt++;
+		}
 #else
 		if (ctx->pp_timeout_report_cnt == 0) {
 			WARN(1, "mdss_mdp_cmd_wait4pingpong timed out: rc=%d, ctl=%d\n", rc, ctl->num);
@@ -1658,7 +1681,12 @@ static int mdss_mdp_cmd_panel_on(struct mdss_mdp_ctl *ctl,
 			WARN(rc, "intf %d panel on error (%d)\n",
 					ctl->intf_num, rc);
 
+#if defined (CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+			if (!skip_lcd_error_check)
+					rc = mdss_mdp_tearcheck_enable(ctl, true);
+#else
 			rc = mdss_mdp_tearcheck_enable(ctl, true);
+#endif
 			WARN(rc, "intf %d tearcheck enable error (%d)\n",
 					ctl->intf_num, rc);
 		}
@@ -1937,7 +1965,14 @@ int mdss_mdp_cmd_restore(struct mdss_mdp_ctl *ctl, bool locked)
 			pr_warn("%s: ctx%d tearcheck setup failed\n", __func__,
 				sctx->pp_num);
 		else
+#if defined (CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+		{
+			if (!skip_lcd_error_check)
+				mdss_mdp_tearcheck_enable(ctl, true);
+		}
+#else
 			mdss_mdp_tearcheck_enable(ctl, true);
+#endif
 	}
 
 	return 0;

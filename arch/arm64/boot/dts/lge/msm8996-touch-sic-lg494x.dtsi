@@ -29,7 +29,7 @@
 			interrupt-names = "spi_irq", "spi_bam_irq";
 			interrupts = <0 106 0>, <0 239 0>;
 
-			spi-max-frequency = <40000000>;
+			spi-max-frequency = <15000000>;
 			qcom,master-id = <84>;
 
 			clock-names = "iface_clk", "core_clk";
@@ -57,7 +57,7 @@
 				interrupt-parent = <&tlmm>;
 				interrupts = <125 0x2008>;
 				irqflags = <0x00000002>;
-				spi-max-frequency = <40000000>;
+				spi-max-frequency = <15000000>;
 
 				pinctrl-names = "touch_pin_active", "touch_pin_sleep";
 				pinctrl-0 = <&ts_reset_active &ts_int_active>;
@@ -82,7 +82,7 @@
 				hide_coordinate = <1>;
 
 				/* Firmware */
-				fw_image = "touch/h1/L0L53P1_1_17.img",
+				fw_image = "touch/h1/L0L53P1_1_22.img",
 					 "touch/h1/L0L53P1_1_14.img";
 
 				panel_spec = "touch/h1/h1_limit.txt";

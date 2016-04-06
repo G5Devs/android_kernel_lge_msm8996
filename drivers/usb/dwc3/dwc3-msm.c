@@ -54,6 +54,14 @@
 #include <soc/qcom/lge/board_lge.h>
 #include <soc/qcom/lge/lge_cable_detection.h>
 #include <linux/qpnp/qpnp-adc.h>
+#include <linux/reboot.h>
+#include <soc/qcom/restart.h>
+static int firstboot_check = 1;
+
+#ifdef CONFIG_SLIMPORT_COMMON
+#include <linux/slimport.h>
+#endif
+
 #define DWC3_USB30_CHG_CURRENT 900
 #define DEFAULT_DCP_CHG_MAX    1800
 #endif
@@ -280,8 +288,12 @@ struct dwc3_msm {
 #ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
 	struct hrtimer		floated_chg_hrtimer;
 	struct delayed_work	floated_chg_work;
+	struct delayed_work floated_chg_work_chargerlogo;
 	bool			apsd_rerun_need;
 	bool			after_apsd_rerun;
+#endif
+#ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
+	int phy_nondrive_mode;
 #endif
 };
 
@@ -314,6 +326,38 @@ void touch_notify_connect(int value);
 #define FLOATED_CHG_CURRENT_MAX        1500 * 1000
 #define FLOATED_CHG_DEFAULT_CURRENT    500 * 1000
 static bool apsd_retried = false;
+static int floated_chg_check_cnt = 0;
+
+static void dwc3_floated_chg_work_chargerlogo(struct work_struct *w)
+{
+	struct dwc3_msm *mdwc = container_of(w, struct dwc3_msm, floated_chg_work_chargerlogo.work);
+	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
+	unsigned long delay = FLOATED_CHG_CHECK_DELAY;
+	int dp, dm;
+
+	if (floated_chg_check_cnt < 24) {
+		pr_info("%s(): floated_charger_check_cnt: %d\n", __func__, floated_chg_check_cnt);
+		if (atomic_read(&dwc->in_lpm)) {
+			 floated_chg_check_cnt++;
+			 schedule_delayed_work(&mdwc->floated_chg_work_chargerlogo, delay);
+			 return;
+		}
+		usb_phy_read_dpdm(mdwc->hs_phy, &dp, &dm);
+		if (dp==1 && dm==1) {
+			pr_info("%s(): dcp connected while in is_floated_charger\n", __func__);
+			mdwc->usb_psy.is_floated_charger = 0;
+			power_supply_changed(&mdwc->usb_psy);
+			floated_chg_check_cnt = 0;
+			return;
+		} else {
+			floated_chg_check_cnt++;
+			schedule_delayed_work(&mdwc->floated_chg_work_chargerlogo, delay);
+		}
+	} else {
+		pr_info("%s(): floated_charger_check_end\n", __func__);
+		floated_chg_check_cnt = 0;
+	}
+}
 
 static void dwc3_floated_chg_work(struct work_struct *w)
 {
@@ -326,6 +370,7 @@ static void dwc3_floated_chg_work(struct work_struct *w)
 		power_supply_set_current_limit(&mdwc->usb_psy,
 				FLOATED_CHG_DEFAULT_CURRENT);
 		power_supply_changed(&mdwc->usb_psy);
+		schedule_delayed_work(&mdwc->floated_chg_work_chargerlogo, 0);
 	} else {
 		pr_info("%s(): retry apsd\n", __func__);
 		pr_info("%s(): vbus_active(%d), softconnect(%d)\n", __func__, mdwc->vbus_active, dwc->softconnect);
@@ -503,6 +548,7 @@ static void dwc3_cable_adc_work(struct work_struct *w)
 {
 	struct dwc3_msm *mdwc = container_of(w, struct dwc3_msm,
 		cable_adc_work.work);
+	enum lge_boot_mode_type boot_mode;
 
 	if (IS_ERR_OR_NULL(mdwc->vadc_id_dev)) {
 		 mdwc->vadc_id_dev = qpnp_get_vadc(mdwc->dev, "dwc");
@@ -521,6 +567,29 @@ static void dwc3_cable_adc_work(struct work_struct *w)
 			chg_to_string(mdwc->chg_type));
 
 	lge_pm_read_cable_info(mdwc->vadc_id_dev);
+
+	//If a 910K cable in qem boot, just reset here.
+	boot_mode = lge_get_boot_mode();
+	if(lge_pm_get_cable_type() == CABLE_910K &&
+		(boot_mode == LGE_BOOT_MODE_QEM_56K ||
+		boot_mode == LGE_BOOT_MODE_QEM_130K) &&
+		(lge_smem_cable_type() != 11 || !firstboot_check) &&
+		!lge_get_laf_mode()
+#ifdef CONFIG_SLIMPORT_COMMON
+		&&!slimport_is_connected()
+#endif
+		)
+	{
+		pr_info("[FACTORY] Reset due to 910K cable fast pace, pm:%d, xbl:%d\n boot:%d",
+			lge_pm_get_cable_type(), lge_smem_cable_type(), boot_mode);
+
+		/* write magic number for laf mode */
+		msm_set_restart_mode(RESTART_DLOAD);
+		kernel_restart(NULL);
+	}
+
+	firstboot_check = 0;
+
 	mdwc->adc_read_complete = true;
 }
 
@@ -1172,6 +1241,9 @@ static void dwc3_restart_usb_work(struct work_struct *w)
 	}
 
 	dwc->err_evt_seen = false;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	mdwc->in_restart = false;
+#endif
 }
 
 /**
@@ -2262,6 +2334,11 @@ static int dwc3_msm_power_get_property_usb(struct power_supply *psy,
 		val->intval = mdwc->apsd_rerun_need;
 		break;
 #endif
+#ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
+	case POWER_SUPPLY_PROP_USB_NON_DRIVE:
+		val->intval = mdwc->phy_nondrive_mode;
+		break;
+#endif
 #ifdef CONFIG_LGE_PM_CABLE_DETECTION
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		pr_info("%s: POWER_SUPPLY_PROP_VOLTAGE_NOW\n", __func__);
@@ -2480,6 +2557,19 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 		mdwc->apsd_rerun_need = val->intval;
 		break;
 #endif
+#ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
+	case POWER_SUPPLY_PROP_USB_NON_DRIVE:
+		if (val->intval == 1) {
+			if (mdwc->vbus_active && dwc->softconnect) {
+				pr_info("%s(): put phy into non-drive mode\n", __func__);
+				usb_phy_set_nondrive_mode(mdwc->hs_phy);
+			}
+			mdwc->phy_nondrive_mode = 1;
+		} else {
+			mdwc->phy_nondrive_mode = 0;
+		}
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -2551,6 +2641,9 @@ static enum power_supply_property dwc3_msm_pm_power_props_usb[] = {
 #endif
 #ifdef CONFIG_LGE_PM_CABLE_DETECTION
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+#endif
+#ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
+	POWER_SUPPLY_PROP_USB_NON_DRIVE,
 #endif
 };
 
@@ -2773,6 +2866,7 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 #endif
 #ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
 	INIT_DELAYED_WORK(&mdwc->floated_chg_work, dwc3_floated_chg_work);
+	INIT_DELAYED_WORK(&mdwc->floated_chg_work_chargerlogo, dwc3_floated_chg_work_chargerlogo);
 
 	hrtimer_init(&mdwc->floated_chg_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
 	mdwc->floated_chg_hrtimer.function = floated_chg_hrtimer_func;
@@ -3729,6 +3823,13 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 				work = 1;
 				delay = VBUS_REG_CHECK_DELAY;
 				break;
+#else
+				if (lge_get_factory_boot()) {
+					mdwc->otg_state = OTG_STATE_B_IDLE;
+					work = 1;
+					delay = VBUS_REG_CHECK_DELAY;
+					break;
+				}
 #endif
 			}
 #endif

@@ -48,7 +48,7 @@ static int hdcp_enable = 1;
 
 /* HDCP switch for external block*/
 /* external_block_en = 1: enable, 0: disable*/
-int external_block_en = 1;
+int external_block_en = 0;
 
 static bool irq_enable;
 
@@ -56,6 +56,7 @@ static bool irq_enable;
 extern void ex_audio(void);
 #endif
 
+unchar g_hdcp_cap = 0;
 /* to access global platform data */
 static struct anx7816_platform_data *g_pdata;
 
@@ -111,6 +112,11 @@ void slimport_set_hdmi_hpd(int on)
 		pr_info("%s %s: hpd off = %s\n", LOG_TAG, __func__,
 				rc ? "failed" : "passed");
 	} else {
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+		if (on && hdmi_hpd_flag != 0) {
+			slimport_set_hdcp_done_switch_node(0);
+		}
+#endif
 		pr_info("%s %s: hpd status is stupid.\n", LOG_TAG, __func__);
 	}
 	pr_info("%s %s:-\n", LOG_TAG, __func__);
@@ -166,6 +172,45 @@ bool slimport_is_check(void)
 	return pdata->check_slimport_connection;
 }
 EXPORT_SYMBOL(slimport_is_check);
+
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+void slimport_set_hdcp_done_switch_node(int val)
+{
+	int state = 0;
+	struct anx7816_platform_data *pdata = NULL;
+
+	if (!anx7816_client) {
+		pr_err("%s: invalid input\n", __func__);
+		return;
+	}
+
+	pdata = anx7816_client->dev.platform_data;
+
+	if (!pdata) {
+		pr_err("%s: invalid input\n", __func__);
+		return;
+	}
+
+	state = pdata->hdcp_done_sdev.state;
+
+	if (!slimport_is_connected()) {
+		pr_err("%s: slimport is not connected. set state 0\n", __func__);
+		switch_set_state(&pdata->hdcp_done_sdev, 0);
+		return;
+	}
+
+	if (!is_slimport_vga()) {
+		switch_set_state(&pdata->hdcp_done_sdev, val);
+		pr_info("%s: hdcp done state %s %d\n", __func__,
+			pdata->hdcp_done_sdev.state != state ? "switched to" : "is same",
+			pdata->hdcp_done_sdev.state);
+	} else {
+		switch_set_state(&pdata->hdcp_done_sdev, 1);
+		pr_info("%s: do not need to check hdcp done state with none HDCP device.\n", __func__);
+	}
+} /* slimport_set_hdcp_done_switch_node */
+EXPORT_SYMBOL(slimport_set_hdcp_done_switch_node);
+#endif
 
 /* LGE_CHANGE,
  * power control
@@ -1540,6 +1585,15 @@ static int anx7816_i2c_probe(struct i2c_client *client,
 		}
 	}
 #endif
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+	anx7816->pdata->hdcp_done_sdev.name = "slimport_hdcp_done";
+	if (switch_dev_register(&anx7816->pdata->hdcp_done_sdev) < 0) {
+		pr_err("%s: slimport_hdcp switch registration failed\n",
+			__func__);
+		ret = -ENODEV;
+		goto err4;
+	}
+#endif
 	pr_info("%s %s end\n", LOG_TAG, __func__);
 	goto exit;
 
@@ -1566,6 +1620,9 @@ static int anx7816_i2c_remove(struct i2c_client *client)
 		device_remove_file(&client->dev, &slimport_device_attrs[i]);
 	pr_err("anx7816_i2c_remove\n");
 	sp_tx_clean_state_machine();
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+	switch_dev_unregister(&anx7816->pdata->hdcp_done_sdev);
+#endif
 	destroy_workqueue(anx7816->workqueue);
 	sp_tx_hardware_powerdown();
 	free_irq(client->irq, anx7816);
@@ -1583,7 +1640,8 @@ static int anx7816_i2c_remove(struct i2c_client *client)
 bool is_slimport_vga(void)
 {
 	return ((sp_tx_cur_cable_type() == DWN_STRM_IS_VGA_9832) ||
-			(sp_tx_cur_cable_type() == DWN_STRM_IS_ANALOG)) ? 1 : 0;
+			(sp_tx_cur_cable_type() == DWN_STRM_IS_ANALOG) ||
+			(!external_block_en && !g_hdcp_cap)) ? 1 : 0;
 }
 EXPORT_SYMBOL(is_slimport_vga);
 

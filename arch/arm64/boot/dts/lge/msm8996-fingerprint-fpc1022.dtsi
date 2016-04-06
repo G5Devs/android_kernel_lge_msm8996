@@ -127,7 +127,7 @@
 
 				config {
 					pins = "gpio38";
-					bias-disable;
+					bias-pull-down;
 					drive_strength = <2>;
 				};
 			};

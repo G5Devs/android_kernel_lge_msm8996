@@ -211,4 +211,5 @@ enum lge_alice_friends {
 enum lge_alice_friends lge_get_alice_friends(void);
 #endif
 
+extern int on_hidden_reset;
 #endif

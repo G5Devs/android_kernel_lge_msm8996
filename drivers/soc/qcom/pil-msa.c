@@ -498,8 +498,7 @@ int pil_mss_reset_load_mba(struct pil_desc *pil)
 	if (ret) {
 		dev_err(pil->dev, "Failed to locate %s\n",
 						fw_name_p);
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		subsystem_restart("modem");
 		return ret;
 	}
 
@@ -507,8 +506,7 @@ int pil_mss_reset_load_mba(struct pil_desc *pil)
 	if (!data) {
 		dev_err(pil->dev, "MBA data is NULL\n");
 		ret = -ENOMEM;
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		subsystem_restart("modem");
 		goto err_invalid_fw;
 	}
 
@@ -537,8 +535,7 @@ int pil_mss_reset_load_mba(struct pil_desc *pil)
 	if (!mba_dp_virt) {
 		dev_err(pil->dev, "MBA metadata buffer allocation failed\n");
 		ret = -ENOMEM;
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		subsystem_restart("modem");
         goto err_invalid_fw;
 	}
 
@@ -574,8 +571,8 @@ int pil_mss_reset_load_mba(struct pil_desc *pil)
 	ret = pil_mss_reset(pil);
 	if (ret) {
 		dev_err(pil->dev, "MBA boot failed.\n");
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		modem_log_rmb_regs(drv->rmb_base);
+		subsystem_restart("modem");
 		goto err_mss_reset;
 	}
 
@@ -619,8 +616,7 @@ static int pil_msa_auth_modem_mdt(struct pil_desc *pil, const u8 *metadata,
 	if (!mdata_virt) {
 		dev_err(pil->dev, "MBA metadata buffer allocation failed\n");
 		ret = -ENOMEM;
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		subsystem_restart("modem");
 		goto fail;
 	}
 	memcpy(mdata_virt, metadata, size);
@@ -649,13 +645,13 @@ static int pil_msa_auth_modem_mdt(struct pil_desc *pil, const u8 *metadata,
 		POLL_INTERVAL_US, modem_auth_timeout_ms * 1000);
 	if (ret) {
 		dev_err(pil->dev, "MBA authentication of headers timed out\n");
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		modem_log_rmb_regs(drv->rmb_base);
+		subsystem_restart("modem");
 	} else if (status < 0) {
 		dev_err(pil->dev, "MBA returned error %d for headers\n",
 				status);
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		modem_log_rmb_regs(drv->rmb_base);
+		subsystem_restart("modem");
 		ret = -EINVAL;
 	}
 
@@ -735,12 +731,12 @@ static int pil_msa_mba_auth(struct pil_desc *pil)
 			50, modem_auth_timeout_ms * 1000);
 	if (ret) {
 		dev_err(pil->dev, "MBA authentication of image timed out\n");
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		modem_log_rmb_regs(drv->rmb_base);
+		subsystem_restart("modem");
 	} else if (status < 0) {
 		dev_err(pil->dev, "MBA returned error %d for image\n", status);
-        modem_log_rmb_regs(drv->rmb_base);
-        subsystem_restart("modem");
+		modem_log_rmb_regs(drv->rmb_base);
+		subsystem_restart("modem");
 		ret = -EINVAL;
 	}
 

@@ -76,6 +76,7 @@
 #ifdef CUSTOMER_HW10
 #define CMD_BTCOEXMODE_LGAPP_START	"BTCOEX-LGAPP-START"
 #define CMD_BTCOEXMODE_LGAPP_STOP	"BTCOEX-LGAPP-STOP"
+#define CMD_BTCOEX_BT_PREFER_MODE 	"BTCOEX-BT-PREFER"
 #endif
 #define CMD_BTCOEXMODE		"BTCOEXMODE"
 #define CMD_SETSUSPENDOPT	"SETSUSPENDOPT"
@@ -438,6 +439,7 @@ int wl_cfg80211_get_p2p_dev_addr(struct net_device *net, struct ether_addr *p2pd
 int wl_cfg80211_set_btcoex_dhcp(struct net_device *dev, dhd_pub_t *dhd, char *command);
 #ifdef CUSTOMER_HW10
 int wl_cfg80211_set_btcoex_allow_bt_inquiry(struct net_device *dev, char *command, bool enabled);
+int wl_cfg80211_set_btcoex_bt_preference(struct net_device *dev, char *command, bool enabled);
 #endif
 #if defined(CUSTOMER_HW4) && defined(WES_SUPPORT)
 int wl_cfg80211_set_wes_mode(int mode);
@@ -483,7 +485,7 @@ extern char iface_name[IFNAMSIZ];
  * time (only) in dhd_open, subsequential wifi on will be handled by
  * wl_android_wifi_on
  */
-static int g_wifi_on = TRUE;
+int g_wifi_on = TRUE;
 
 /**
  * Local (static) function definitions
@@ -4007,6 +4009,10 @@ int wl_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 	else if (strnicmp(command, CMD_BTCOEXMODE_LGAPP_STOP,
 		strlen(CMD_BTCOEXMODE_LGAPP_STOP)) == 0) {
 		bytes_written = wl_cfg80211_set_btcoex_allow_bt_inquiry(net, command, 1);
+	}
+	else if (strnicmp(command, CMD_BTCOEX_BT_PREFER_MODE, strlen(CMD_BTCOEX_BT_PREFER_MODE)) == 0) {
+		uint mode = *(command + strlen(CMD_BTCOEX_BT_PREFER_MODE) + 1) - '0';
+		bytes_written = wl_cfg80211_set_btcoex_bt_preference(net, command, mode);
 	}
 #endif
 	else if (strnicmp(command, CMD_BTCOEXMODE, strlen(CMD_BTCOEXMODE)) == 0) {

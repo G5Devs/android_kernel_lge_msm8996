@@ -7,10 +7,16 @@
 #ifdef CONFIG_LGE_USB_TYPE_C
 #include <linux/power_supply.h>
 #endif
+#include <linux/wakelock.h>
+#include <linux/rwsem.h>
 #include <linux/usb/class-dual-role.h>
 
 #ifdef CONFIG_LGE_ALICE_FRIENDS
 #include <soc/qcom/lge/board_lge.h>
+#include <../alice_friends/hm.h>
+#endif
+#ifdef CONFIG_LGE_PM_CABLE_DETECTION
+#include <soc/qcom/lge/lge_cable_detection.h>
 #endif
 
 #include "anx7418_i2c.h"
@@ -19,7 +25,7 @@
 #include "anx7418_firmware.h"
 
 #define IS_INTF_IRQ_SUPPORT(anx) \
-	(anx->otp && (anx->rom_ver >= 0x11 && anx->rom_ver < 0xB1))
+	(anx->otp && (anx->rom_ver >= 0x11 && anx->rom_ver < 0xB1 && anx->rom_ver != 0x16))
 
 struct anx7418 {
 	struct i2c_client  *client;
@@ -52,9 +58,9 @@ struct anx7418 {
 	struct workqueue_struct *wq;
 	struct work_struct cable_det_work;
 	struct work_struct i2c_work;
-	struct delayed_work cc_status_work;
 
-	struct mutex mutex;
+	struct rw_semaphore rwsem;
+	struct wake_lock wlock;
 
 	bool otp;
 	int rom_ver;
@@ -66,6 +72,10 @@ struct anx7418 {
 
 	bool is_dbg_acc;
 
+	struct work_struct try_src_work;
+	struct work_struct try_snk_work;
+	bool is_tried_snk;
+
 #ifdef CONFIG_DUAL_ROLE_USB_INTF
 	struct dual_role_phy_desc *desc;
 	struct dual_role_phy_instance *dual_role;
@@ -73,6 +83,8 @@ struct anx7418 {
 
 #ifdef CONFIG_LGE_ALICE_FRIENDS
 	enum lge_alice_friends friends;
+	struct mutex hm_mutex;
+	struct hm_instance *hm;
 #endif
 };
 
@@ -129,6 +141,7 @@ struct anx7418 {
 #define VBUS_CHG			BIT(3)
 #define CC_STATUS_CHG			BIT(4)
 #define DATA_ROLE_CHG			BIT(5)
+#define PR_C_GOT_POWER			BIT(6)
 
 #define TX_DATA0			0x18 /* ~ 0x1F */
 #define RX_DATA0			0x20 /* ~ 0x27 */
@@ -282,6 +295,7 @@ struct anx7418 {
 #define AUTO_PD_EN			BIT(1)
 
 #define VBUS_OFF_DELAY			0x69
+#define TIME_CONTROL			0x6B
 
 #define R_EE_BURST_DATA0		0x67
 #define R_EE_BURST_DATA1		0x68
@@ -376,6 +390,13 @@ struct anx7418 {
 #define PD_RX_HALF_BIT_PERIOD		0xCB
 #define PD_RX_FULL_BIT_PERIOD		0xCC
 
+#define MAX_VOLT_RDO			0xD0
+#define MAX_POWER_SYSTEM		0xD1
+#define MIN_POWER_SYSTEM		0xD2
+
+#define RDO_MAX_VOLT			0xD3
+#define RDO_MAX_POWER			0xD4
+
 #define R_OTP_ADDR_HIGH			0xD0
 #define R_OTP_ADDR_LOW			0xD1
 #define R_OTP_DATA_IN_0			0xD2
@@ -432,6 +453,7 @@ struct anx7418 {
 #define TENUS_TIMER_H			0xFD
 #define TENUS_TIMER_L			0xFE
 
+int anx7418_reg_init(struct anx7418 *anx);
 int anx7418_pwr_on(struct anx7418 *anx, int is_on);
 
 int anx7418_set_mode(struct anx7418 *anx, int mode);

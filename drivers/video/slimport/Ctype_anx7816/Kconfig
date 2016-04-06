@@ -23,8 +23,13 @@ config SLIMPORT_CONSTRAINT_4K_30FPS
 	default n
 	tristate "ANX7816 resoution constraint for 4K"
 	help
-	  HDMI doesn't support 4K 60Hz fps,
+	  SLIMPORT doesn't support 4K 60Hz fps,
 	  so, we downgrade it to 4K 30Hz for slimport specification
 
+config SLIMPORT_HDCP_UEVENT
+	depends on SLIMPORT_COMMON
+	default y
+	tristate "ANX7816 HDCP DONE switch node support"
+	help
+	  Notifying progress state of SLIMPORT HDCP authenticating to userspace.
 
-#define LGE_PATCH_FOR_CONSTRAINT_4K_30FPS

@@ -82,6 +82,7 @@ static int chg_set_property(struct power_supply *psy,
 			struct anx7418_charger, psy);
 	struct anx7418 *anx = chg->anx;
 	struct device *cdev = &chg->anx->client->dev;
+	int rc;
 
 	switch (prop) {
 	case POWER_SUPPLY_PROP_USB_OTG:
@@ -89,15 +90,54 @@ static int chg_set_property(struct power_supply *psy,
 			break;
 		dev_dbg(cdev, "%s: is_otg(%d)\n", __func__, chg->is_otg);
 		chg->is_otg = val->intval;
-		anx_dbg_event("VBUS TIGGER", chg->is_otg);
-		queue_work_on(0, anx->wq, &chg->otg_work);
+
+		anx_dbg_event("VBUS REG", chg->is_otg);
+		if (chg->is_otg) {
+			rc = regulator_enable(anx->vbus_reg);
+			if (rc)
+				dev_err(cdev, "unable to enable vbus\n");
+			anx_dbg_event("VBUS", 1);
+		} else {
+			rc = regulator_disable(anx->vbus_reg);
+			if (rc)
+				dev_err(cdev, "unable to disable vbus\n");
+			anx_dbg_event("VBUS", 0);
+		}
 		break;
 
 	case POWER_SUPPLY_PROP_PRESENT:
+#ifdef CONFIG_LGE_ALICE_FRIENDS
+		if (anx->friends == LGE_ALICE_FRIENDS_NONE)
+#endif
+		if (anx->is_dbg_acc || anx->mode == DUAL_ROLE_PROP_MODE_NONE) {
+			if (val->intval) {
+				dev_info(cdev, "power on by charger\n");
+				anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_DEVICE);
+			} else {
+				if (anx->dr == DUAL_ROLE_PROP_DR_DEVICE) {
+					dev_info(cdev, "power down by charger\n");
+					anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_NONE);
+				} else if (anx->dr == DUAL_ROLE_PROP_DR_NONE) {
+					union power_supply_propval prop;
+					anx->usb_psy->get_property(anx->usb_psy,
+							POWER_SUPPLY_PROP_PRESENT, &prop);
+					if (prop.intval) {
+						dev_info(cdev, "power down by charger\n");
+						power_supply_set_present(anx->usb_psy, 0);
+					}
+				}
+			}
+		}
+
+		if (chg->is_present == val->intval)
+			break;
 		chg->is_present = val->intval;
 		dev_dbg(cdev, "%s: is_present(%d)\n", __func__, chg->is_present);
 
 		if (chg->is_present) {
+#ifdef CONFIG_LGE_ALICE_FRIENDS
+			if (anx->friends == LGE_ALICE_FRIENDS_NONE)
+#endif
 			schedule_delayed_work(&chg->chg_work,
 					msecs_to_jiffies(CHG_WORK_DELAY));
 		} else {
@@ -107,22 +147,10 @@ static int chg_set_property(struct power_supply *psy,
 			chg->ctype_charger = 0;
 		}
 
-		if (anx->is_dbg_acc) {
-			if (val->intval == true) {
-				if (!atomic_read(&anx->pwr_on)) {
-					dev_info(cdev, "power on by charger\n");
-					power_supply_set_present(anx->usb_psy, 1);
-				}
-			} else {
-				dev_info(cdev, "power down by charger\n");
-				power_supply_set_present(anx->usb_psy, 0);
-			}
-		}
-
 #ifdef CONFIG_LGE_ALICE_FRIENDS
 		if ((anx->friends == LGE_ALICE_FRIENDS_HM ||
 		     anx->friends == LGE_ALICE_FRIENDS_HM_B) &&
-		    anx->dr == DUAL_ROLE_PROP_DR_DEVICE) {
+		     anx->dr != DUAL_ROLE_PROP_DR_HOST) {
 			if (chg->is_present)
 				power_supply_set_present(anx->usb_psy, 1);
 			else
@@ -191,31 +219,33 @@ static void chg_work(struct work_struct *w)
 	struct device *cdev = &client->dev;
 	int rc = 0;
 
-	mutex_lock(&anx->mutex);
+	down_read(&anx->rwsem);
 
 	if (!atomic_read(&anx->pwr_on))
 		goto out;
 
-	/* check ctype charger */
-	rc = anx7418_read_reg(client, POWER_DOWN_CTRL);
+	if (chg->ctype_charger != ANX7418_CTYPE_PD_CHARGER) {
+		/* check ctype charger */
+		rc = anx7418_read_reg(client, POWER_DOWN_CTRL);
 
-	if (rc & (CC1_VRD_3P0 | CC2_VRD_3P0)) {
-		// 5V@3A
-		chg->volt_max = 5000;
-		chg->curr_max = 3000;
-		chg->ctype_charger = ANX7418_CTYPE_CHARGER;
+		if (rc & (CC1_VRD_3P0 | CC2_VRD_3P0)) {
+			// 5V@3A
+			chg->volt_max = 5000;
+			chg->curr_max = 2000; /* 3000: it cause TA vbus drop */
+			chg->ctype_charger = ANX7418_CTYPE_CHARGER;
 
-	} else if (rc & (CC1_VRD_1P5 | CC2_VRD_1P5)) {
-		/* From the power team request, do not update 5v@1.5A */
+		} else if (rc & (CC1_VRD_1P5 | CC2_VRD_1P5)) {
+			/* From the power team request, do not update 5v@1.5A */
 
-		// 5V@1.5A
-		//chg->volt_max = 5000;
-		//chg->curr_max = 1500;
-		//chg->ctype_charger = ANX7418_CTYPE_CHARGER;
+			// 5V@1.5A
+			//chg->volt_max = 5000;
+			//chg->curr_max = 1500;
+			//chg->ctype_charger = ANX7418_CTYPE_CHARGER;
 
-	} else {
-		// Default USB Current
-		dev_dbg(cdev, "%s: Default USB Power\n", __func__);
+		} else {
+			// Default USB Current
+			dev_dbg(cdev, "%s: Default USB Power\n", __func__);
+		}
 	}
 
 	/* Update ctype(ctype-pd) charger */
@@ -239,29 +269,7 @@ static void chg_work(struct work_struct *w)
 
 	power_supply_changed(&chg->psy);
 out:
-	mutex_unlock(&anx->mutex);
-}
-
-static void otg_work(struct work_struct *w)
-{
-	struct anx7418_charger *chg = container_of(w,
-			struct anx7418_charger, otg_work);
-	struct anx7418 *anx = chg->anx;
-	struct device *cdev = &anx->client->dev;
-	int rc;
-
-	anx_dbg_event("VBUS REG", chg->is_otg);
-	if (chg->is_otg) {
-		rc = regulator_enable(anx->vbus_reg);
-		if (rc)
-			dev_err(cdev, "unable to enable vbus\n");
-		anx_dbg_event("VBUS", 1);
-	} else {
-		rc = regulator_disable(anx->vbus_reg);
-		if (rc)
-			dev_err(cdev, "unable to disable vbus\n");
-		anx_dbg_event("VBUS", 0);
-	}
+	up_read(&anx->rwsem);
 }
 
 int anx7418_charger_init(struct anx7418 *anx)
@@ -282,7 +290,6 @@ int anx7418_charger_init(struct anx7418 *anx)
 
 	chg->anx = anx;
 	INIT_DELAYED_WORK(&chg->chg_work, chg_work);
-	INIT_WORK(&chg->otg_work, otg_work);
 
 	rc = power_supply_register(cdev, &chg->psy);
 	if (rc < 0) {
@@ -291,7 +298,6 @@ int anx7418_charger_init(struct anx7418 *anx)
 	}
 
 	power_supply_set_supply_type(&chg->psy, POWER_SUPPLY_TYPE_UNKNOWN);
-	power_supply_set_present(&chg->psy, 0);
 
 	return 0;
 }

@@ -67,7 +67,7 @@
 				config {
 					pins = "gpio83", "gpio84";
 					drive-strength = <2>;
-					bias-pull-up;
+					bias-pull-down;
 				};
 			};
 		};
@@ -191,7 +191,9 @@
 	qcom,pmi8994@3 {
 		qcom,leds@d300 {
 
-			qcom,vph-pwr-droop-threshold = <2900>;
+			qcom,vph-pwr-droop-threshold = <2600>;
+			qcom,vph-pwr-droop-debounce-time = <60>;
+			qcom,pmic-revid = <&pmi8994_revid>;
 
 			pmi8994_flash0: qcom,flash_0 {
 				qcom,current = <600>;
@@ -326,7 +328,7 @@
 		qcom,actuator-src  = <&actuator0>;
 		qcom,proxy-src     = <&proxy0>;
 		qcom,tcs-src       = <&tcs>;
-		
+
 		cam_vdig-supply    = <&pm8994_l3>;
 		cam_vio-supply     = <&pm8994_lvs1>;
 		cam_oisdvdd-supply = <&pm8994_l23>;

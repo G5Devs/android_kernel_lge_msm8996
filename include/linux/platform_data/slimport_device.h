@@ -15,6 +15,9 @@
 #ifndef SLIMPORT_DEVICE
 #define SLIMPORT_DEVICE
 #include <linux/pinctrl/consumer.h>
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+#include <linux/switch.h>
+#endif
 
 struct anx7816_platform_data
 {
@@ -35,7 +38,9 @@ struct anx7816_platform_data
 #ifdef CONFIG_SLIMPORT_DYNAMIC_HPD
 	struct platform_device *hdmi_pdev;
 #endif
-
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+	struct switch_dev hdcp_done_sdev;
+#endif
 };
 
 struct anx7808_platform_data

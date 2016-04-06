@@ -33,18 +33,18 @@
 #define T1_LGIT_ACTUATOR_FIRMWARE_VER_BIN_2 "bu24234_dl_program_Alice_LGITAct_ICG1020S_rev2_S_data2_0x18.bin"
 #define THIN_1215_LGIT_ACTUATOR_FIRMWARE_VER_BIN_1 "bu24234_dl_program_Alice_LGITAct_ICG1020S_rev4_S_data1_0x36.bin"
 #define THIN_1215_LGIT_ACTUATOR_FIRMWARE_VER_BIN_2 "bu24234_dl_program_Alice_LGITAct_ICG1020S_rev4_S_data2_0x36.bin"
-#define THIN_1226_MTM_ACTUATOR_FIRMWARE_VER_BIN_1 "bu24234_dl_program_Alice_MTMAct_ICG1020S_rev9_S_test2_data1_0x6D.bin"
-#define THIN_1226_MTM_ACTUATOR_FIRMWARE_VER_BIN_2 "bu24234_dl_program_Alice_MTMAct_ICG1020S_rev9_S_test2_data2_0x6D.bin"
-#define THIN_1226_LGIT_ACTUATOR_FIRMWARE_VER_BIN_1 "bu24234_dl_program_Alice_LGITAct_ICG1020S_rev6_S_data1_0x42.bin"
-#define THIN_1226_LGIT_ACTUATOR_FIRMWARE_VER_BIN_2 "bu24234_dl_program_Alice_LGITAct_ICG1020S_rev6_S_data2_0x42.bin"
+#define THIN_1226_MTM_ACTUATOR_FIRMWARE_VER_BIN_1 "bu24234_dl_program_Alice_MTMAct_ICG1020S_rev13_S_data1.bin"
+#define THIN_1226_MTM_ACTUATOR_FIRMWARE_VER_BIN_2 "bu24234_dl_program_Alice_MTMAct_ICG1020S_rev13_S_data2.bin"
+#define THIN_1226_LGIT_ACTUATOR_FIRMWARE_VER_BIN_1 "bu24234_dl_program_Alice_LGITAct_ICG1020S_rev13_S_data1_0x4E.bin"
+#define THIN_1226_LGIT_ACTUATOR_FIRMWARE_VER_BIN_2 "bu24234_dl_program_Alice_LGITAct_ICG1020S_rev13_S_data2_0x4E.bin"
 
 #define T0_MTM_ACTUATOR_FIRMWARE_VER_CHECKSUM			0x0001405B
 #define T0_LGIT_ACTUATOR_FIRMWARE_VER_CHECKSUM			0x00014297
 #define T1_MTM_ACTUATOR_FIRMWARE_VER_CHECKSUM   		0x00014763
 #define T1_LGIT_ACTUATOR_FIRMWARE_VER_CHECKSUM			0x00014962
 #define THIN_1215_LGIT_ACTUATOR_FIRMWARE_VER_CHECKSUM	0x00015CF4
-#define THIN_1226_MTM_ACTUATOR_FIRMWARE_VER_CHECKSUM	0x00016A34
-#define THIN_1226_LGIT_ACTUATOR_FIRMWARE_VER_CHECKSUM	0x00016256
+#define THIN_1226_MTM_ACTUATOR_FIRMWARE_VER_CHECKSUM	0x00033CA9
+#define THIN_1226_LGIT_ACTUATOR_FIRMWARE_VER_CHECKSUM	0x00033E94
 /*If changed FW, change above FW bin and Checksum information*/
 
 #define E2P_FIRST_ADDR			(0x0900)
@@ -195,10 +195,10 @@ static struct ois_i2c_bin_list THIN_1226_MTM_ACTUATOR_LGIT_VER16_REL_BIN_DATA = 
 	.entries = {
 		{
 			.filename = THIN_1226_MTM_ACTUATOR_FIRMWARE_VER_BIN_1,
-			.filesize = 0x03E0,
+			.filesize = 0x09C8,
 			.blocks = 1,
 			.addrs = {
-				{0x0000, 0x03DF, 0x0000},
+				{0x0000, 0x09C7, 0x0000},
 			}
 		},
 		{
@@ -218,10 +218,10 @@ static struct ois_i2c_bin_list THIN_1226_LGIT_ACTUATOR_LGIT_VER16_REL_BIN_DATA =
 	.entries = {
 		{
 			.filename = THIN_1226_LGIT_ACTUATOR_FIRMWARE_VER_BIN_1,
-			.filesize = 0x03B8,
+			.filesize = 0x09C8,
 			.blocks = 1,
 			.addrs = {
-				{0x0000, 0x03B7, 0x0000},
+				{0x0000, 0x09C7, 0x0000},
 			}
 		},
 		{
@@ -433,18 +433,21 @@ int32_t lgit_imx234_rohm_ois_mode(struct msm_ois_ctrl_t *o_ctrl,
 	switch (mode) {
 	case OIS_MODE_PREVIEW_CAPTURE:
 	case OIS_MODE_CAPTURE:
-		pr_err("%s:%d, %d preview capture\n", __func__, mode, cur_mode);
+		pr_err("%s:input mode : %d, current mode : %d \n", __func__, mode, cur_mode);
+	case OIS_MODE_VIDEO:
 		//RegWriteA(0x6021, 0x03);
 		RegWriteA(0x6021, 0x63); // New STILL Mode for improving drift issue
 		usleep_range(10 * 1000, 10 * 1000 + 10); // 20151127 Rohm_LeeDJ_delay 10ms
 		RegWriteA(0x6020, 0x02);
 		break;
+#if 0 //change, ROHM 12S F/W has issue at 0x61
 	case OIS_MODE_VIDEO:
 		pr_err("%s:%d, %d video\n", __func__, mode, cur_mode);
 		RegWriteA(0x6021, 0x61);
 		usleep_range(10 * 1000, 10 * 1000 + 10); // 20151127 Rohm_LeeDJ_delay 10ms
 		RegWriteA(0x6020, 0x02);
 		break;
+#endif
 	case OIS_MODE_CENTERING_ONLY:
 		pr_err("%s:%d, %d centering_only\n", __func__, mode, cur_mode);
 		RegWriteA(0x6020, 0x01);
@@ -637,11 +640,11 @@ int32_t lgit_imx234_init_set_rohm_ois(struct msm_ois_ctrl_t *o_ctrl,
 		rc = lgit_imx234_rohm_ois_bin_download(THIN_1215_LGIT_ACTUATOR_LGIT_VER16_REL_BIN_DATA);
 		break;
 	case 0x40:
-		pr_err("[CHECK] %s: Apply THIN_1226_LGIT_ACTUATOR_LGIT_VER16_REL_BIN_DATA\n", __func__);
+		pr_err("[CHECK] %s: Apply THIN_1226_LGIT_ACTUATOR_LGIT_VER16_REL_BIN_DATA, 13s\n", __func__);
 		rc = lgit_imx234_rohm_ois_bin_download(THIN_1226_LGIT_ACTUATOR_LGIT_VER16_REL_BIN_DATA);
 		break;
 	case 0x41:
-		pr_err("[CHECK] %s: Apply THIN_1226_MTM_ACTUATOR_LGIT_VER16_REL_BIN_DATA, 9s_2\n", __func__);
+		pr_err("[CHECK] %s: Apply THIN_1226_MTM_ACTUATOR_LGIT_VER16_REL_BIN_DATA, 13s\n", __func__);
 		rc = lgit_imx234_rohm_ois_bin_download(THIN_1226_MTM_ACTUATOR_LGIT_VER16_REL_BIN_DATA);
 		break;
 	default:

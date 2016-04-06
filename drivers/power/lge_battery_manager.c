@@ -20,6 +20,7 @@
 #define USB_PSY_NAME "usb"
 #define DC_PSY_NAME "dc"
 #define BM_OCV_SET_TIME 10000
+#define BM_MONITOR_WORK_TIME 10000
 #ifdef SBM_TEST_MODE
 #define BM_VT_MONITOR_A 2000 //2s
 #else
@@ -74,9 +75,9 @@ static int bm_debug_mask = PR_INFO|PR_ERR;
 #define pr_bm(reason, fmt, ...)                                          \
     do {                                                                 \
 	if (bm_debug_mask & (reason))                                    \
-	    pr_info("[BM] " fmt, ##__VA_ARGS__);                         \
+	    pr_info("[bm] " fmt, ##__VA_ARGS__);                         \
 	else                                                             \
-	    pr_debug("[BM] " fmt, ##__VA_ARGS__);                        \
+	    pr_debug("[bm] " fmt, ##__VA_ARGS__);                        \
     } while (0)
 
 enum count_value{
@@ -109,6 +110,7 @@ struct batt_mngr {
 	struct power_supply *bms_psy;
 	struct power_supply *usb_psy;
 	struct power_supply *dc_psy;
+	struct delayed_work bm_monitor_work;
 	struct delayed_work bm_ocv_set_work;
 	struct delayed_work voltage_track_work;
 #ifdef BM_CURRENT_PULSING
@@ -127,6 +129,7 @@ static int ocv_table[OCV_COUNT + 1];
 #define BM_PROC_NAME "driver/sbm"
 static char *log_buffer[LOG_MAX_SIZE];
 static int log_index;
+static bool work_started;
 
 struct mutex mutex;
 
@@ -181,7 +184,6 @@ static void batt_mngr_write_log(char *log, int size)
 	if (size == 0)
 		return;
 	if (log_index >= LOG_MAX_SIZE) {
-		pr_bm(PR_ERR, "Log buffer full\n");
 		return;
 	}
 	mutex_lock(&mutex);
@@ -300,8 +302,10 @@ static void batt_mngr_ocv_set_work(struct work_struct *work)
 			POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN, (int)(OCV_COUNT));
 	}
 
-	schedule_delayed_work(&bm->voltage_track_work,
-		round_jiffies_relative(msecs_to_jiffies(BM_VT_MONITOR_A)));
+	if(work_started == true) {
+		schedule_delayed_work(&bm->voltage_track_work,
+			round_jiffies_relative(msecs_to_jiffies(BM_VT_MONITOR_A)));
+	}
 }
 
 static int batt_mngr_calc_current(struct batt_mngr *bm,
@@ -558,11 +562,13 @@ static void batt_mngr_voltage_track_work(struct work_struct *work)
 				voltage_track_work.work);
 	int rc = 0;
 
+	pr_bm(PR_INFO, "monitoring\n");
+
 	rc = batt_mngr_abnormal_voltage_monitor(bm);
-	if (rc) {
+	if (rc && work_started == true) {
 		schedule_delayed_work(&bm->voltage_track_work,
 			round_jiffies_relative(msecs_to_jiffies(BM_VT_MONITOR_B)));
-	} else {
+	} else if(work_started == true) {
 		schedule_delayed_work(&bm->voltage_track_work,
 			round_jiffies_relative(msecs_to_jiffies(BM_VT_MONITOR_A)));
 	}
@@ -668,7 +674,12 @@ static int batt_mngr_stop_work(struct batt_mngr *bm)
 	}
 
 	batt_mngr_reset_param(bm->ref);
-	cancel_delayed_work(&bm->voltage_track_work);
+
+	cancel_delayed_work_sync(&bm->bm_monitor_work);
+	cancel_delayed_work_sync(&bm->voltage_track_work);
+	cancel_delayed_work_sync(&bm->bm_ocv_set_work);
+	work_started = false;
+	pr_bm(PR_INFO,"Stop work\n");
 	return 1;
 }
 
@@ -685,13 +696,35 @@ static int batt_mngr_start_work(struct batt_mngr *bm)
 	if (cycle == bm->cycle_count + 1) {
 		bm->cycled = 1;
 	}
-		bm->cycle_count = cycle;
+	bm->cycle_count = cycle;
 
 	battery_mngr_init_parameter(bm);
-	schedule_delayed_work(&bm->bm_ocv_set_work,
-			round_jiffies_relative(msecs_to_jiffies(BM_OCV_SET_TIME)));
 
+	if(work_started == true) {
+		cancel_delayed_work_sync(&bm->bm_ocv_set_work);
+		schedule_delayed_work(&bm->bm_ocv_set_work,
+				round_jiffies_relative(msecs_to_jiffies(BM_OCV_SET_TIME)));
+		pr_bm(PR_INFO,"Start work\n");
+	}
 	return 1;
+}
+
+static void batt_mngr_monitor_work(struct work_struct *work)
+{
+	struct batt_mngr *bm = container_of(work,
+				struct batt_mngr,
+				bm_monitor_work.work);
+	int usb_present = 0;
+	int dc_present = 0;
+
+	batt_mngr_get_fg_prop(bm->usb_psy, POWER_SUPPLY_PROP_PRESENT, &usb_present);
+	batt_mngr_get_fg_prop(bm->dc_psy, POWER_SUPPLY_PROP_PRESENT, &dc_present);
+
+	if ( usb_present | dc_present ) {
+		batt_mngr_start_work(bm);
+	} else {
+		work_started = false;
+	}
 }
 
 void batt_mngr_ocv_table(int *ocv_tab, int size)
@@ -717,13 +750,17 @@ static int batt_mngr_set_property(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED:
 		if (val->intval == 1) {
-			batt_mngr_start_work(bm);
+			if(work_started == false) {
+				work_started = true;
+				batt_mngr_start_work(bm);
+			} else {
+				pr_bm(PR_INFO, "work started\n");
+			}
 		} else {
 			batt_mngr_stop_work(bm);
 		}
 		break;
 	default:
-		pr_bm(PR_ERR, "Invalid property(%d)\n", psp);
 		return -EINVAL;
 	}
 	return 0;
@@ -746,7 +783,6 @@ static int batt_mngr_get_property(struct power_supply *psy,
 		val->intval = 1;
 		break;
 	default:
-		pr_bm(PR_ERR, "Invalid property(%d)\n", bm_property);
 		return -EINVAL;
 	}
 	return rc;
@@ -756,8 +792,6 @@ static int batt_mngr_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct batt_mngr *bm = NULL;
-	int usb_present = 0;
-	int dc_present = 0;
 
 	bm = kzalloc(sizeof(struct batt_mngr), GFP_KERNEL);
 	if (bm == NULL) {
@@ -822,18 +856,18 @@ static int batt_mngr_probe(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&bm->bm_ocv_set_work, batt_mngr_ocv_set_work);
 	INIT_DELAYED_WORK(&bm->voltage_track_work, batt_mngr_voltage_track_work);
+	INIT_DELAYED_WORK(&bm->bm_monitor_work, batt_mngr_monitor_work);
 #ifdef BM_CURRENT_PULSING
 	INIT_DELAYED_WORK(&bm->pulsing_work, batt_mngr_pulsing_work);
 #endif
 
 	platform_set_drvdata(pdev, bm);
 
-	batt_mngr_get_fg_prop(bm->usb_psy, POWER_SUPPLY_PROP_PRESENT, &usb_present);
-	batt_mngr_get_fg_prop(bm->dc_psy, POWER_SUPPLY_PROP_PRESENT, &dc_present);
+	schedule_delayed_work(&bm->bm_monitor_work,
+			round_jiffies_relative(msecs_to_jiffies(BM_MONITOR_WORK_TIME)));
+	work_started = true;
 
-	if ( usb_present | dc_present ) {
-		batt_mngr_start_work(bm);
-	}
+	pr_bm(PR_INFO, "Probe done\n");
 	return ret;
 
 error:

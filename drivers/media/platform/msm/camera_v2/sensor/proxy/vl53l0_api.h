@@ -227,6 +227,9 @@ VL53L0_API VL53L0_Error VL53L0_GetPowerMode(VL53L0_DEV Dev,
             VL53L0_PowerModes* pPowerMode);
 
 
+VL53L0_API VL53L0_Error VL53L0_RestoreOffset(VL53L0_DEV Dev, int32_t OffsetMicroMeter);
+
+
 /**
  * Set or over-hide part to part calibration offset
  * \sa VL53L0_DataInit()   VL53L0_GetOffsetCalibrationDataMicroMeter()

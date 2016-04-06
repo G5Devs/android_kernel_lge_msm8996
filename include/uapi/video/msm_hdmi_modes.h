@@ -256,7 +256,8 @@ struct msm_hdmi_mode_timing_info {
 #define LGVR_OFF(x)			(RESERVE_VFRMT_END + x)
 
 #define HDMI_VFRMT_1440x960p60_3_2	LGVR_OFF(1)
-#define LGVR_VFRMT_END			HDMI_VFRMT_1440x960p60_3_2
+#define HDMI_VFRMT_1440x960p57_3_2	LGVR_OFF(2)
+#define LGVR_VFRMT_END			HDMI_VFRMT_1440x960p57_3_2
 
 #define HDMI_VFRMT_MAX			(LGVR_VFRMT_END + 1)
 /* Add LGVR SVD LGE_E */
@@ -440,8 +441,12 @@ struct msm_hdmi_mode_timing_info {
 		HDMI_RES_AR_64_27, 0}
 /* Add LGVR SVD LGE_S */
 #define HDMI_VFRMT_1440x960p60_3_2_TIMING                             \
-	{HDMI_VFRMT_1440x960p60_3_2, 1440, 52, 4, 60, false,       \
+	{HDMI_VFRMT_1440x960p60_3_2, 1440, 52, 2, 60, false,       \
 	 960, 16, 4, 16, false, 93000, 60000, false, true, \
+		HDMI_RES_AR_3_2, 0}
+#define HDMI_VFRMT_1440x960p57_3_2_TIMING                             \
+	{HDMI_VFRMT_1440x960p57_3_2, 1440, 52, 4, 60, false,       \
+	 960, 16, 4, 16, false, 89000, 57000, false, true, \
 		HDMI_RES_AR_3_2, 0}
 /* Add LGVR SVD LGE_E */
 
@@ -529,6 +534,8 @@ do {	\
 			HDMI_VFRMT_3840x2160p60_64_27); \
 		MSM_HDMI_MODES_SET_TIMING(__lut,	\
 			HDMI_VFRMT_1440x960p60_3_2); \
+		MSM_HDMI_MODES_SET_TIMING(__lut,	\
+			HDMI_VFRMT_1440x960p57_3_2); \
 	}	\
 	if (__type & MSM_HDMI_MODES_XTND) {	\
 		MSM_HDMI_MODES_SET_TIMING(__lut,	\

@@ -17,7 +17,6 @@
 #include "msm8996-elsa_vzw.dtsi"
 #include "msm8996-elsa_vzw-touch.dtsi"
 #include "msm8996-elsa_vzw-camera-rev-0_1.dtsi"
-#include "msm8996-elsa_vzw-fingerprint-rev-0_1.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. MSM 8996 v3.0 + PMI8994 MTP";
@@ -161,22 +160,8 @@
 	lge,lge_rid_disable;
 };
 
-&sdhc_2 {
-    pinctrl-0 = <&sdc2_clk_on  &sdc2_cmd_on &sdc2_data_on &sdc2_cd_rev_0_1_on>;
-    pinctrl-1 = <&sdc2_clk_off &sdc2_cmd_off &sdc2_data_off &sdc2_cd_rev_0_1_off>;
-    cd-gpios = <&tlmm 112 0x1>;
-};
-
 /* set unused gpio to off */
 &pm8994_gpios {
-	gpio@c500 { /* GPIO 6 - FPC LDO_EN */
-		qcom,mode = <1>;                /* Digital output*/
-		qcom,vin-sel = <2>;             /* VIN2 */
-		qcom,src-sel = <0>;             /* GPIO */
-		qcom,master-en = <1>;           /* Enable GPIO */
-		status = "okay";
-	};
-
 	gpio@c600 { /* PM GPIO 7 */
 		status = "okay";
 		qcom,master-en = <0x0>;
@@ -253,6 +238,12 @@
 		status = "okay";
 		qcom,master-en = <0x0>;
 	};
+};
+
+&sdhc_2 {
+    pinctrl-0 = <&sdc2_clk_on  &sdc2_cmd_on &sdc2_data_on &sdc2_cd_rev_0_1_on>;
+    pinctrl-1 = <&sdc2_clk_off &sdc2_cmd_off &sdc2_data_off &sdc2_cd_rev_0_1_off>;
+    cd-gpios = <&tlmm 112 0x1>;
 };
 
 &soc {

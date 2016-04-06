@@ -53,6 +53,7 @@ static unsigned char g_need_clean_status;
 /* HDCP switch for external block*/
 /* external_block_en = 1: enable, 0: disable*/
 extern int external_block_en;
+extern unchar g_hdcp_cap;
 static unchar ds_vid_stb_cntr;
 static unchar HDCP_fail_count;
 
@@ -469,7 +470,9 @@ void system_power_ctrl(unchar enable)
 		pr_info("%s : slimport already connect", __func__);
 		return;
 	}
-
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+	slimport_set_hdcp_done_switch_node(0);
+#endif
 #ifdef CONFIG_SLIMPORT_DYNAMIC_HPD
 	slimport_set_hdmi_hpd(enable);
 #endif
@@ -955,6 +958,9 @@ void slimport_sink_connection(void)
 					pr_info("%s %s : Can not get cable type!\n", LOG_TAG, __func__);
 				}
 				break;
+			}
+			if (external_block_en == 0) {
+				slimport_hdcp_cap_check();
 			}
 			sp_tx_sc_state = SC_SINK_CONNECTED;
 		case SC_SINK_CONNECTED:
@@ -1848,7 +1854,7 @@ static void sp_tx_load_packet(enum PACKETS_TYPE type)
 		sp_write_reg(TX_P2, SP_TX_AUD_VER, 0x01);
 		sp_write_reg(TX_P2, SP_TX_AUD_LEN, 0x0a);
 		for (i = 0; i < 10; i++) {
-			sp_write_reg(TX_P2, SP_TX_AUD_DB0 + i,
+			sp_write_reg(TX_P2, SP_TX_AUD_TYPE + i,
 					sp_tx_audioinfoframe.pb_byte[i]);
 		}
 
@@ -2102,6 +2108,9 @@ void slimport_hdcp_process(void)
 	case HDCP_CAPABLE_CHECK:
 		ds_vid_stb_cntr = 0;
 		HDCP_fail_count = 0;
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+		slimport_set_hdcp_done_switch_node(0);
+#endif
 		if(is_anx_dongle())
 			HDCP_state = HDCP_WAITTING_VID_STB;
 		else
@@ -2139,6 +2148,9 @@ void slimport_hdcp_process(void)
 	case HDCP_WAITTING_FINISH:
 		break;
 	case HDCP_FINISH:
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+		slimport_set_hdcp_done_switch_node(1);
+#endif
 		sp_tx_hdcp_encryption_enable();
 		hdmi_rx_mute_video(0);
 		sp_tx_video_mute(0);
@@ -2308,9 +2320,15 @@ static void sp_tx_config_audio(void)
 #ifdef CONFIG_SLIMPORT_COMMON
 void ex_audio(void)
 {
-	//sp_tx_enable_audio_output(0);
-	//msleep(100);
-	pr_err("%s: audio test",__func__);
+	sp_tx_enable_audio_output(0);
+	if (sp_rx_bandwidth < 0x14) // coms,kangwon dongle patch..
+	{
+		msleep(3000);
+	}
+	else
+	{
+		msleep(800);
+	}
 	sp_tx_enable_audio_output(1);
 }
 #endif
@@ -2419,7 +2437,6 @@ void slimport_state_process (void)
 	case STATE_PLAY_BACK:
 #ifdef CONFIG_SLIMPORT_COMMON
 		if (audio_restart_flag) {
-			msleep(AUDIO_MUTE_BAN_DELAY);
 			ex_audio();
 			audio_restart_flag = 0;
 		}
@@ -3499,7 +3516,6 @@ void sp_tx_get_ddc_hdcp_BKSV(unchar *bksv)
 
 unchar slimport_hdcp_cap_check(void)
 {
-	unchar g_hdcp_cap = 0;
 	unchar temp;
 
 	if(AUX_OK == sp_tx_aux_dpcdread_bytes(0x06, 0x80, 0x28, 1, &temp))
@@ -3507,7 +3523,7 @@ unchar slimport_hdcp_cap_check(void)
 	else
 		pr_info("HDCP CAPABLE: read AUX err! \n");
 
-	pr_info("%s %s :hdcp cap check: %s Supported\n", LOG_TAG, __func__, g_hdcp_cap ? "" : "No");
+	pr_info("%s %s :hdcp cap check: %s Supported, real read value = 0x%x\n", LOG_TAG, __func__, g_hdcp_cap ? "" : "No", temp);
 	return g_hdcp_cap;
 }
 /******************End HDCP cap check********************/

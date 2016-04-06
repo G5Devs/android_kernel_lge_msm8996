@@ -33,7 +33,7 @@
 	qcom,iterm-ma = <100>;
 	qcom,fastchg-current-ma = <3100>;
 	qcom,float-voltage-mv = <4400>;
-	qcom,resume-delta-mv = <200>;
+	qcom,resume-delta-mv = <149>;
 	qcom,bmd-pin-src="bpd_thm";
 	qcom,bms-psy-name = "bms";
 	qcom,jeita-temp-hard-limit = <0>;
@@ -47,6 +47,7 @@
 	qcom,usb_id-vadc = <&pm8994_vadc>;
 	qcom,usbin-vadc = <&pmi8994_vadc>;
 	qcom,afvc-comp-voltage = <0x01>;
+	qcom,default-hvdcp-icl-ma = <2000>;
 
 	/* lge,cable-adc-maxset : size of each cable prop        */
 	/* lge,cable-adc-useset : actual cable adc using set     */
@@ -91,6 +92,7 @@
 	qcom,fg-cutoff-voltage-mv = <3200>;
 	qcom,thermal-coefficients = [D2 85 0E 4A A5 35];
 	qcom,ext-sense-type;
+	qcom,capacity-learning-feedback;
 	qcom,resume-soc = <99>;
 	qcom,resume-soc-raw = <253>;
 	qcom,fg-iterm-ma = <200>;
@@ -98,6 +100,19 @@
 	qcom,lge_batt_profile;
 	qcom,vbat-estimate-diff-mv = <200>;
 	qcom,fg-cc-cv-threshold-mv = <4390>;
+	qcom,esr-pulse-tuning-en;
+	qcom,fg-use-vbat-low-empty-soc;
+	qcom,fg-reset-on-lockup;
+	qcom,fg-cc-soc-limit-pct = <120>;
+	qcom,fg-control-slope-limiter;
+	qcom,fg-slope-limit-high-temp-chg = <6>;
+	qcom,fg-slope-limit-high-temp-dischg = <6>;
+	qcom,fg-slope-limit-low-temp-chg = <14>;
+	qcom,fg-slope-limit-low-temp-dischg =<14>;
+	qcom,fg-dischg-voltage-gain-ctrl;
+	qcom,fg-dischg-voltage-gain-soc = <7 15 20>;
+	qcom,fg-dischg-med-voltage-gain = <5 4 4>;
+	qcom,fg-dischg-high-voltage-gain = <4 4 3>;
 };
 
 &pmi8994_haptics {
@@ -276,6 +291,7 @@
 			"charger", "wlc_thermal_mitigation", "NULL",
 			"charger", "usb_parallel_chg_status", "NULL",
 			"charger", "usb_parallel_charging_enabled", "NULL",
+			"charger", "quick_charging_state", "/sys/module/lge_charging_controller/parameters/quick_charging_state",
 			/* LCD Backlight */
 			"lcd", "brightness", "/sys/class/leds/lcd-backlight/brightness",
 			"lcd", "max_brightness", "/sys/class/leds/lcd-backlight/max_brightness",

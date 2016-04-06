@@ -4,7 +4,6 @@
 #include <linux/of_gpio.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
-#include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/err.h>
 #include <linux/types.h>
@@ -31,7 +30,72 @@ unsigned int dfp;
 module_param(dfp, uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(dfp, "FORCED DFP MODE");
 
-int vrd = 0;
+static int intf_irq_mask = 0xFF;
+
+#ifdef CONFIG_LGE_ALICE_FRIENDS
+static const char *alice_friends_string(enum lge_alice_friends friends)
+{
+	static const char *const names[] = {
+		[LGE_ALICE_FRIENDS_NONE] = "None",
+		[LGE_ALICE_FRIENDS_CM] = "CM",
+		[LGE_ALICE_FRIENDS_HM] = "HM",
+		[LGE_ALICE_FRIENDS_HM_B] = "HM >= Rev.B",
+	};
+
+	if (friends < 0 || friends >= ARRAY_SIZE(names))
+		return "Undefined";
+
+	return names[friends];
+}
+
+enum {
+	HM_EARJACK_DETACH = 0,
+	HM_EARJACK_ATTACH = 1,
+	HM_NO_INIT = 2,
+};
+
+static int ext_acc_en = HM_NO_INIT;
+
+static irqreturn_t ext_acc_en_irq_thread(int irq, void *_anx)
+{
+	struct anx7418 *anx = _anx;
+	struct device *cdev = &anx->client->dev;
+	int en;
+
+	wake_lock_timeout(&anx->wlock, msecs_to_jiffies(2000));
+
+	mutex_lock(&anx->hm_mutex);
+
+	en = gpio_get_value(anx->ext_acc_en_gpio);
+	dev_info(cdev, "ext_acc_en_gpio: old(%d), new(%d)\n", ext_acc_en, en);
+	if (ext_acc_en == en)
+		goto out;
+
+	ext_acc_en = en;
+
+	if (ext_acc_en == HM_EARJACK_ATTACH) {
+		dev_info(cdev, "HM: Host\n");
+
+		power_supply_set_present(anx->usb_psy, false);
+
+		power_supply_set_usb_otg(anx->usb_psy, 1);
+		anx->dr = DUAL_ROLE_PROP_DR_HOST;
+
+		hm_earjack_changed(anx->hm, true);
+	} else {
+		dev_info(cdev, "HM: Device\n");
+
+		power_supply_set_usb_otg(anx->usb_psy, 0);
+		anx->dr = DUAL_ROLE_PROP_DR_DEVICE;
+
+		hm_earjack_changed(anx->hm, false);
+	}
+
+out:
+	mutex_unlock(&anx->hm_mutex);
+	return IRQ_HANDLED;
+}
+#endif
 
 int anx7418_set_mode(struct anx7418 *anx, int mode)
 {
@@ -40,11 +104,11 @@ int anx7418_set_mode(struct anx7418 *anx, int mode)
 	if (anx->mode == mode)
 		return 0;
 
-	dev_dbg(cdev, "%s(%d)\n", __func__, mode);
-
 	switch (mode) {
 	case DUAL_ROLE_PROP_MODE_UFP:
 	case DUAL_ROLE_PROP_MODE_DFP:
+		anx->is_tried_snk = false;
+
 	case DUAL_ROLE_PROP_MODE_NONE:
 		break;
 
@@ -54,6 +118,8 @@ int anx7418_set_mode(struct anx7418 *anx, int mode)
 	}
 
 	anx->mode = mode;
+
+	dev_dbg(cdev, "%s(%d)\n", __func__, mode);
 	return 0;
 }
 
@@ -63,8 +129,6 @@ int anx7418_set_pr(struct anx7418 *anx, int pr)
 
 	if (anx->pr == pr)
 		return 0;
-
-	dev_dbg(cdev, "%s(%d)\n", __func__, pr);
 
 	switch (pr) {
 	case DUAL_ROLE_PROP_PR_SRC:
@@ -76,16 +140,13 @@ int anx7418_set_pr(struct anx7418 *anx, int pr)
 
 	case DUAL_ROLE_PROP_PR_SNK:
 #ifdef CONFIG_LGE_USB_TYPE_C
-		if (!IS_INTF_IRQ_SUPPORT(anx) &&
-		    anx->pr == DUAL_ROLE_PROP_PR_SRC)
-			power_supply_set_usb_otg(&anx->chg.psy, 0);
+		power_supply_set_usb_otg(&anx->chg.psy, 0);
 #endif
 		break;
 
 	case DUAL_ROLE_PROP_PR_NONE:
 #ifdef CONFIG_LGE_USB_TYPE_C
-		if (anx->pr == DUAL_ROLE_PROP_PR_SRC)
-			power_supply_set_usb_otg(&anx->chg.psy, 0);
+		power_supply_set_usb_otg(&anx->chg.psy, 0);
 #endif
 		break;
 
@@ -95,6 +156,8 @@ int anx7418_set_pr(struct anx7418 *anx, int pr)
 	}
 
 	anx->pr = pr;
+
+	dev_dbg(cdev, "%s(%d)\n", __func__, pr);
 	return 0;
 }
 
@@ -104,8 +167,6 @@ int anx7418_set_dr(struct anx7418 *anx, int dr)
 
 	if (anx->dr == dr)
 		return 0;
-
-	dev_dbg(cdev, "%s(%d)\n", __func__, dr);
 
 	switch (dr) {
 	case DUAL_ROLE_PROP_DR_HOST:
@@ -120,7 +181,7 @@ int anx7418_set_dr(struct anx7418 *anx, int dr)
 		anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_NONE);
 
 #ifdef CONFIG_LGE_USB_TYPE_C
-			power_supply_set_present(anx->usb_psy, 1);
+		power_supply_set_present(anx->usb_psy, 1);
 #endif
 		break;
 
@@ -140,6 +201,72 @@ int anx7418_set_dr(struct anx7418 *anx, int dr)
 	}
 
 	anx->dr = dr;
+
+	dev_dbg(cdev, "%s(%d)\n", __func__, dr);
+	return 0;
+}
+
+int anx7418_reg_init(struct anx7418 *anx)
+{
+	struct i2c_client *client = anx->client;
+
+	if (!anx->otp)
+		return 0;
+
+	anx7418_i2c_lock(client);
+
+	/* Interface and Status Interrupt Mask. Offset : 0x17
+	 * 0 : RECVD_MSG_INT_MASK
+	 * 1 : Reserved
+	 * 2 : VCONN_CHG_INT_MASK
+	 * 3 : VBUS_CHG_INT_MASK
+	 * 4 : CC_STATUS_CHG_INT_MASK
+	 * 5 : DATA_ROLE_CHG_INT_MASK
+	 * 6 : Reserved
+	 * 7 : Reserved
+	 */
+	if (IS_INTF_IRQ_SUPPORT(anx)) {
+		if (anx->rom_ver >= 0x12) {
+			intf_irq_mask = 0x83;
+
+			// AUTO-PD
+			__anx7418_write_reg(client, MAX_VOLT_RDO, 0x5A);
+			__anx7418_write_reg(client, MAX_POWER_SYSTEM, 0x24);
+			__anx7418_write_reg(client, MIN_POWER_SYSTEM, 0x06);
+			__anx7418_write_reg(client, FUNCTION_OPTION,
+					__anx7418_read_reg(client, FUNCTION_OPTION) | AUTO_PD_EN);
+
+			/*
+			 * 1:0 : To control the timing between PS_RDY and
+			 *       vbus on during PR_SWAP.
+			 *       0x00: 50ms; 0x01: 100ms; 0x02: 150ms; 0x03: 200ms
+			 * 3:2 : To control the timing between PS_RDY and
+			 *       vbus off during PR_SWAP.
+			 *       0x00: 50ms; 0x01: 100ms; 0x02: 150ms; 0x03: 200ms
+			 * 5:4 : To control the timing between the first cc message
+			 *       and vbus on.
+			 *       0x00: 10ms; 0x01: 40ms; 0x02: 70ms; 0x03: 100ms
+			 */
+			__anx7418_write_reg(client, TIME_CONTROL, 0x18);
+
+			// skip check vbus
+			__anx7418_write_reg(client, 0x6E,
+					__anx7418_read_reg(client, 0x6E) | 1);
+		} else {
+			intf_irq_mask = 0xC2;
+		}
+
+		__anx7418_write_reg(client, IRQ_INTF_MASK, intf_irq_mask);
+
+#ifndef PD_CTS_TEST
+		/* in AP side, for the interoperability,
+		 * set the try.UFP period to 0x96*2 = 300ms. */
+		__anx7418_write_reg(client, TRY_UFP_TIMER, 0x96);
+#endif
+	}
+
+	anx7418_i2c_unlock(client);
+
 	return 0;
 }
 
@@ -150,8 +277,10 @@ int __anx7418_pwr_on(struct anx7418 *anx)
 	int i;
 	int rc;
 
-	if (!anx->otp)
-		gpio_set_value(anx->vconn_gpio, 1);
+#ifdef CONFIG_LGE_ALICE_FRIENDS
+	if (anx->friends != LGE_ALICE_FRIENDS_CM)
+#endif
+	gpio_set_value(anx->vconn_gpio, 1);
 
 	gpio_set_value(anx->pwr_en_gpio, 1);
 	anx_dbg_event("PWR EN", 1);
@@ -181,7 +310,7 @@ int __anx7418_pwr_on(struct anx7418 *anx)
 	anx_dbg_event("OCM STARTUP", rc);
 
 	atomic_set(&anx->pwr_on, 1);
-	dev_info(cdev, "anx7418 power on\n");
+	dev_info_ratelimited(cdev, "anx7418 power on\n");
 
 	return i >= OCM_STARTUP_TIMEOUT ? -EIO : 0;
 }
@@ -191,7 +320,7 @@ void __anx7418_pwr_down(struct anx7418 *anx)
 	struct device *cdev = &anx->client->dev;
 
 	atomic_set(&anx->pwr_on, 0);
-	dev_info(cdev, "anx7418 power down\n");
+	dev_info_ratelimited(cdev, "anx7418 power down\n");
 
 	gpio_set_value(anx->resetn_gpio, 0);
 	anx_dbg_event("RESETN", 0);
@@ -213,7 +342,7 @@ int anx7418_pwr_on(struct anx7418 *anx, int is_on)
 	union power_supply_propval prop;
 #endif
 
-	dev_info(cdev, "%s(%d)\n", __func__, is_on);
+	dev_info_ratelimited(cdev, "%s(%d)\n", __func__, is_on);
 
 #ifdef CONFIG_LGE_ALICE_FRIENDS
 	if (anx->friends == LGE_ALICE_FRIENDS_NONE)
@@ -231,27 +360,12 @@ int anx7418_pwr_on(struct anx7418 *anx, int is_on)
 		anx->is_dbg_acc = false;
 	}
 
-	if (is_on) {
-		vrd = 0;
-		schedule_delayed_work(&anx->cc_status_work,
-				msecs_to_jiffies(3000));
-	} else {
-		cancel_delayed_work(&anx->cc_status_work);
-	}
-
-#ifdef CONFIG_LGE_ALICE_FRIENDS
-	if (anx->friends != LGE_ALICE_FRIENDS_HM &&
-	    anx->friends != LGE_ALICE_FRIENDS_HM_B) {
-#endif
-#ifdef CONFIG_LGE_ALICE_FRIENDS
-	}
-#endif
-	mutex_lock(&anx->mutex);
+	down_write(&anx->rwsem);
 
 	if (atomic_read(&anx->pwr_on) == is_on) {
 		dev_dbg(cdev, "anx7418 power is already %s\n",
 				is_on ? "on" : "down");
-		mutex_unlock(&anx->mutex);
+		up_write(&anx->rwsem);
 		return 0;
 	}
 
@@ -264,46 +378,28 @@ int anx7418_pwr_on(struct anx7418 *anx, int is_on)
 		/* Turn on CC1 VCONN for HM */
 		if (anx->friends == LGE_ALICE_FRIENDS_HM ||
 		    anx->friends == LGE_ALICE_FRIENDS_HM_B) {
-			anx7418_write_reg(client, POWER_DOWN_CTRL, R_POWER_DOWN_OCM);
+			ext_acc_en_irq_thread(anx->ext_acc_en_irq, anx);
 
-			gpio_set_value(anx->vconn_gpio, 1);
+			anx7418_write_reg(client, RESET_CTRL_0,
+					R_OCM_RESET | R_PD_RESET);
 
 			rc = anx7418_read_reg(client, R_PULL_UP_DOWN_CTRL_1);
 			rc |= R_VCONN1_EN_PULL_DOWN;
 			anx7418_write_reg(client, R_PULL_UP_DOWN_CTRL_1, rc);
+			dev_info(cdev, "%s: Turn on CC1 VCONN for HM\n", __func__);
+
+			anx7418_write_reg(client, POWER_DOWN_CTRL,
+					R_POWER_DOWN_OCM | R_POWER_DOWN_PD);
+
+			enable_irq(anx->ext_acc_en_irq);
 			goto out;
 		}
 #endif
 
 		anx_dbg_event("INIT START", 0);
 
-		if (anx->otp) {
-			anx7418_i2c_lock(client);
-
-			/* Interface and Status Interrupt Mask. Offset : 0x17
-			 * 0 : RECVD_MSG_INT_MASK
-			 * 1 : Reserved
-			 * 2 : VCONN_CHG_INT_MASK
-			 * 3 : VBUS_CHG_INT_MASK
-			 * 4 : CC_STATUS_CHG_INT_MASK
-			 * 5 : DATA_ROLE_CHG_INT_MASK
-			 * 6 : Reserved
-			 * 7 : Reserved
-			 */
-			if (IS_INTF_IRQ_SUPPORT(anx)) {
-				__anx7418_write_reg(client, IRQ_INTF_MASK, 0xC2);
-			}
-
-			__anx7418_write_reg(client, VBUS_OFF_DELAY, 0x19);
-			__anx7418_write_reg(client, FUNCTION_OPTION, 0);
-#ifndef PD_CTS_TEST
-			/* in AP side, for the interoperability,
-			 * set the try.UFP period to 0x96*2 = 300ms. */
-			__anx7418_write_reg(client, TRY_UFP_TIMER, 0x96);
-#endif
-
-			anx7418_i2c_unlock(client);
-		}
+		/* init reg */
+		anx7418_reg_init(anx);
 
 		/* init PD */
 		anx7418_pd_init(anx);
@@ -405,6 +501,7 @@ set_as_dfp:
 #endif
 	} else {
 		__anx7418_pwr_down(anx);
+		anx->is_tried_snk = false;
 
 #ifdef CONFIG_LGE_ALICE_FRIENDS
 		if (anx->friends != LGE_ALICE_FRIENDS_NONE &&
@@ -412,86 +509,24 @@ set_as_dfp:
 			anx7418_set_mode(anx, DUAL_ROLE_PROP_MODE_NONE);
 			anx7418_set_pr(anx, DUAL_ROLE_PROP_PR_NONE);
 			anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_NONE);
-		}
-		else
+		} else {
 #endif
+		anx7418_set_pr(anx, DUAL_ROLE_PROP_PR_NONE);
+		anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_NONE);
 		if (anx->mode != DUAL_ROLE_PROP_MODE_NONE) {
 			anx7418_set_mode(anx, DUAL_ROLE_PROP_MODE_NONE);
-			anx7418_set_pr(anx, DUAL_ROLE_PROP_PR_NONE);
-			anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_NONE);
 #ifdef CONFIG_DUAL_ROLE_USB_INTF
 			dual_role_instance_changed(anx->dual_role);
 #endif
 		}
+#ifdef CONFIG_LGE_ALICE_FRIENDS
+		}
+#endif
 	}
 
 out:
-	mutex_unlock(&anx->mutex);
+	up_write(&anx->rwsem);
 	return 0;
-}
-
-static void cc_status_work(struct work_struct *w)
-{
-	struct anx7418 *anx = container_of(w,
-			struct anx7418, cc_status_work.work);
-	struct i2c_client *client = anx->client;
-	struct device *cdev = &client->dev;
-	int rc;
-
-	mutex_lock(&anx->mutex);
-
-	if (!atomic_read(&anx->pwr_on)) {
-		mutex_unlock(&anx->mutex);
-		return;
-	}
-
-	dev_dbg(cdev, "%s\n", __func__);
-
-	rc = anx7418_read_reg(client, ANALOG_STATUS);
-	if (rc < 0)
-		goto out;
-	if (rc & DFP_OR_UFP) {
-		// UFP
-		rc = anx7418_read_reg(client, POWER_DOWN_CTRL) & 0xFC;
-		if (rc < 0)
-			goto out;
-
-		if (vrd == 0 && hweight8(rc) > 1)
-			vrd = rc;
-
-		if (rc == 0 || (vrd && vrd != rc)) {
-			dev_err(cdev, "%s: POWER_DOWN_CTRL(%02X/%02X)\n",
-					__func__, vrd, rc);
-			goto cable_det_err;
-		}
-
-	} else {
-		// DFP
-		rc = anx7418_read_reg(client, ANALOG_CTRL_7) & 0x0F;
-		if (rc < 0)
-			goto out;
-
-		if (rc == 0) {
-			dev_err(cdev, "%s: CC_DETECT_RESULT(%02X)\n", __func__, rc);
-			goto cable_det_err;
-		}
-		vrd = 0;
-	}
-
-out:
-	mutex_unlock(&anx->mutex);
-
-	schedule_delayed_work(&anx->cc_status_work,
-			msecs_to_jiffies(1000));
-	return;
-
-cable_det_err:
-	mutex_unlock(&anx->mutex);
-
-	dev_err(cdev, "%s: cable detect error!!!!\n", __func__);
-	anx7418_pwr_on(anx, 0);
-	if (gpio_get_value(anx->cable_det_gpio))
-		queue_work_on(0, anx->wq, &anx->cable_det_work);
 }
 
 static void i2c_work(struct work_struct *w)
@@ -509,7 +544,7 @@ static void i2c_work(struct work_struct *w)
 #endif
 	int rc;
 
-	mutex_lock(&anx->mutex);
+	down_read(&anx->rwsem);
 
 	if (!atomic_read(&anx->pwr_on)) {
 		anx_dbg_event("I2C IRQ", -1);
@@ -538,7 +573,7 @@ static void i2c_work(struct work_struct *w)
 	anx_dbg_event("INTF IRQ", irq);
 	anx_dbg_event("INTF STATUS", status);
 
-	if (irq & RECVD_MSG) {
+	if (!(intf_irq_mask & RECVD_MSG) && (irq & RECVD_MSG)) {
 		anx7418_i2c_unlock(client);
 		rc = anx7418_pd_process(anx);
 		anx7418_i2c_lock(client);
@@ -549,49 +584,13 @@ static void i2c_work(struct work_struct *w)
 		irq &= ~RECVD_MSG;
 	}
 
-#ifdef CONFIG_LGE_ALICE_FRIENDS
-	if (anx->friends != LGE_ALICE_FRIENDS_NONE) {
-		if (irq & VBUS_CHG)
-			irq &= ~VBUS_CHG;
-	}
-	else
-#endif
-	if (irq & VBUS_CHG) {
-		if (status & VBUS_STATUS) {
-			dev_dbg(cdev, "%s: VBUS ON\n", __func__);
-			power_supply_set_usb_otg(&anx->chg.psy, 1);
-			anx->pr = DUAL_ROLE_PROP_PR_SRC;
-		} else {
-			dev_dbg(cdev, "%s: VBUS OFF\n", __func__);
-			power_supply_set_usb_otg(&anx->chg.psy, 0);
-			anx->pr = DUAL_ROLE_PROP_PR_SNK;
-		}
-#ifdef CONFIG_DUAL_ROLE_USB_INTF
-		dual_role_changed = true;
-#endif
-		irq &= ~VBUS_CHG;
-	}
-
-	if (irq & VCONN_CHG) {
-		if (status & VCONN_STATUS) {
-			dev_dbg(cdev, "%s: VCONN ON\n", __func__);
-			anx_dbg_event("VCONN", 1);
-			gpio_set_value(anx->vconn_gpio, 1);
-		} else {
-			dev_dbg(cdev, "%s: VCONN OFF\n", __func__);
-			anx_dbg_event("VCONN", 0);
-			/*
-			 * prevent unstable vconn voltage
-			 * must not set low !!!!
-			 */
-			//gpio_set_value(anx->vconn_gpio, 0);
-		}
-		irq &= ~VCONN_CHG;
-	}
-
-	if (irq & CC_STATUS_CHG) {
+	if (!(intf_irq_mask & CC_STATUS_CHG) && (irq & CC_STATUS_CHG)) {
 		rc = __anx7418_read_reg(client, CC_STATUS);
 		dev_dbg(cdev, "%s: CC_STATUS(%02X)\n", __func__, rc);
+
+		if (anx->is_tried_snk)
+			__anx7418_write_reg(client, 0x47,
+					__anx7418_read_reg(client, 0x47) & 0xFE);
 
 		if (anx->mode == DUAL_ROLE_PROP_MODE_NONE) {
 			if (rc & 0xCC) {
@@ -602,10 +601,12 @@ static void i2c_work(struct work_struct *w)
 				anx7418_set_mode(anx, DUAL_ROLE_PROP_MODE_UFP);
 				anx7418_set_pr(anx, DUAL_ROLE_PROP_PR_SNK);
 				anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_DEVICE);
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+				dual_role_changed = true;
+#endif
 			} else if (rc == 0x11) {
 				// Debug Accerrosy Mode
-				dev_info(cdev, "%s: Debug Accessory Mode w/o VBUS\n",
-						__func__);
+				dev_info(cdev, "%s: Debug Accessory Mode\n", __func__);
 				anx_dbg_event("Debug Accessory", 0);
 #ifdef CONFIG_LGE_USB_TYPE_C
 				prop.intval = 0;
@@ -621,30 +622,92 @@ static void i2c_work(struct work_struct *w)
 				anx7418_i2c_unlock(client);
 				__anx7418_pwr_down(anx);
 				goto out;
+			} else if (rc == 0x00) {
+				dev_dbg(cdev, "%s: CC Open\n", __func__);
+				anx_dbg_event("CC Open", 0);
+				__anx7418_write_reg(client, IRQ_INTF_STATUS,
+						irq & intf_irq_mask);
+				goto done;
+			} else if (rc == 0x22) {
+				dev_info(cdev, "%s: Audio Accessory Mode\n", __func__);
+				anx_dbg_event("Audio Accessory", 0);
+				__anx7418_write_reg(client, IRQ_INTF_STATUS,
+						irq & intf_irq_mask);
+				goto done;
 			} else {
+#ifdef CONFIG_LGE_ALICE_FRIENDS
+				if (anx->friends == LGE_ALICE_FRIENDS_NONE)
+#endif
+				if (!anx->is_tried_snk) {
+					dev_dbg(cdev, "%s: try_snk\n", __func__);
+
+					anx7418_i2c_unlock(client);
+					rc = try_snk(anx, TRY_ROLE_TIMEOUT);
+					anx7418_i2c_lock(client);
+
+					__anx7418_write_reg(client, IRQ_INTF_STATUS,
+							irq & intf_irq_mask);
+					anx->is_tried_snk = true;
+					goto done;
+				}
+
 				// DFP
 				dev_info(cdev, "%s: set as DFP\n", __func__);
 				anx_dbg_event("DFP", 0);
 
 				anx7418_set_mode(anx, DUAL_ROLE_PROP_MODE_DFP);
+				if (anx->pr == DUAL_ROLE_PROP_PR_NONE)
+					anx7418_set_pr(anx, DUAL_ROLE_PROP_PR_SRC);
 				anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_HOST);
-			}
 #ifdef CONFIG_DUAL_ROLE_USB_INTF
-			dual_role_changed = true;
+				dual_role_changed = true;
 #endif
+			}
 		}
 
 		irq &= ~CC_STATUS_CHG;
 	}
 
-	if (irq & DATA_ROLE_CHG) {
+#ifdef CONFIG_LGE_ALICE_FRIENDS
+	if (anx->friends != LGE_ALICE_FRIENDS_NONE) {
+		if (!(intf_irq_mask & VBUS_CHG) && (irq & VBUS_CHG))
+			irq &= ~VBUS_CHG;
+	}
+	else
+#endif
+	if (!(intf_irq_mask & VBUS_CHG) && (irq & VBUS_CHG)) {
+		if (status & VBUS_STATUS) {
+			dev_dbg(cdev, "%s: VBUS ON\n", __func__);
+			power_supply_set_usb_otg(&anx->chg.psy, 1);
+			anx->pr = DUAL_ROLE_PROP_PR_SRC;
+		} else {
+			dev_dbg(cdev, "%s: VBUS OFF\n", __func__);
+			power_supply_set_usb_otg(&anx->chg.psy, 0);
+			anx->pr = DUAL_ROLE_PROP_PR_SNK;
+		}
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+		dual_role_changed = true;
+#endif
+		irq &= ~VBUS_CHG;
+	}
+
+	if (!(intf_irq_mask & VCONN_CHG) && (irq & VCONN_CHG)) {
+		if (status & VCONN_STATUS) {
+			dev_dbg(cdev, "%s: VCONN ON\n", __func__);
+			anx_dbg_event("VCONN", 1);
+		} else {
+			dev_dbg(cdev, "%s: VCONN OFF\n", __func__);
+			anx_dbg_event("VCONN", 0);
+		}
+		irq &= ~VCONN_CHG;
+	}
+
+	if (!(intf_irq_mask & DATA_ROLE_CHG) && (irq & DATA_ROLE_CHG)) {
 		if (status & DATA_ROLE) {
 			rc = __anx7418_read_reg(client, ANALOG_CTRL_7);
 			if ((rc & 0x0F) == 0x05) { // CC1_Rd and CC2_Rd
-				dev_info(cdev, "%s: set as Debug Accessory Mode\n",
-						__func__);
-
-				power_supply_set_present(anx->usb_psy, 1);
+				dev_info(cdev, "%s: Debug Accessory Mode\n", __func__);
+				anx_dbg_event("Debug Accessory", 0);
 #ifdef CONFIG_LGE_USB_TYPE_C
 				prop.intval = 0;
 				rc = anx->batt_psy->set_property(anx->batt_psy,
@@ -655,12 +718,26 @@ static void i2c_work(struct work_struct *w)
 				gpio_set_value(anx->sbu_sel_gpio, 1);
 
 				anx->is_dbg_acc = true;
-			} else {
-				dev_dbg(cdev, "%s: DFP\n", __func__);
-				anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_HOST);
+
+				anx7418_i2c_unlock(client);
+				__anx7418_pwr_down(anx);
+				goto out;
 			}
+
+			dev_info(cdev, "%s: DFP\n", __func__);
+			anx_dbg_event("DFP", 0);
+			if (anx->mode == DUAL_ROLE_PROP_MODE_NONE)
+				anx7418_set_mode(anx, DUAL_ROLE_PROP_MODE_DFP);
+			if (anx->pr == DUAL_ROLE_PROP_PR_NONE)
+				anx7418_set_pr(anx, DUAL_ROLE_PROP_PR_SRC);
+			anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_HOST);
 		} else {
-			dev_dbg(cdev, "%s: UFP\n", __func__);
+			dev_info(cdev, "%s: UFP\n", __func__);
+			anx_dbg_event("UFP", 0);
+			if (anx->mode == DUAL_ROLE_PROP_MODE_NONE)
+				anx7418_set_mode(anx, DUAL_ROLE_PROP_MODE_UFP);
+			if (anx->pr == DUAL_ROLE_PROP_PR_NONE)
+				anx7418_set_pr(anx, DUAL_ROLE_PROP_PR_SNK);
 			anx7418_set_dr(anx, DUAL_ROLE_PROP_DR_DEVICE);
 		}
 #ifdef CONFIG_DUAL_ROLE_USB_INTF
@@ -669,24 +746,41 @@ static void i2c_work(struct work_struct *w)
 		irq &= ~DATA_ROLE_CHG;
 	}
 
+	if (!(intf_irq_mask & PR_C_GOT_POWER) && (irq & PR_C_GOT_POWER)) {
+		int volt = __anx7418_read_reg(client, RDO_MAX_VOLT);
+		int power = __anx7418_read_reg(client, RDO_MAX_POWER);
+
+		if (volt > 0 && power > 0) {
+			anx->chg.volt_max = volt * 100;
+			anx->chg.curr_max = (power * 500 * 10) / volt;
+			anx->chg.ctype_charger = ANX7418_CTYPE_PD_CHARGER;
+		}
+
+		dev_info(cdev, "%s: VOLT(%dmV), CURR(%dmA)\n", __func__,
+				anx->chg.volt_max, anx->chg.curr_max);
+
+		irq &= ~PR_C_GOT_POWER;
+	}
+
 #ifdef CONFIG_DUAL_ROLE_USB_INTF
 	if (dual_role_changed)
 		dual_role_instance_changed(anx->dual_role);
 #endif
 
 	__anx7418_write_reg(client, IRQ_INTF_STATUS, irq);
-
 done:
 	__anx7418_write_reg(client, IRQ_EXT_SOURCE_2, SOFT_INTERRUPT);
 	anx7418_i2c_unlock(client);
 out:
-	mutex_unlock(&anx->mutex);
+	up_read(&anx->rwsem);
 }
 
 static irqreturn_t i2c_irq(int irq, void *_anx)
 {
 	struct anx7418 *anx = _anx;
 	struct device *cdev = &anx->client->dev;
+
+	wake_lock_timeout(&anx->wlock, msecs_to_jiffies(2000));
 
 	dev_dbg(cdev, "%s\n", __func__);
 	queue_work_on(0, anx->wq, &anx->i2c_work);
@@ -705,56 +799,51 @@ static void cable_det_work(struct work_struct *w)
 	anx7418_pwr_on(anx, det);
 }
 
+#ifdef CABLE_DET_PIN_HAS_GLITCH
+static int confirmed_cable_det(struct anx7418 *anx)
+{
+	int count = 9;
+	int cable_det_count = 0;
+	int cable_det;
+
+	do {
+		cable_det = gpio_get_value(anx->cable_det_gpio);
+		if (cable_det)
+			cable_det_count++;
+		mdelay(1);
+	} while (count--);
+
+	if (cable_det_count > 7)
+		return 1;
+	else if (cable_det_count < 3)
+		return 0;
+	else
+		return atomic_read(&anx->pwr_on);
+}
+#endif
+
 static irqreturn_t cable_det_irq(int irq, void *_anx)
 {
 	struct anx7418 *anx = _anx;
-
-	queue_work_on(0, anx->wq, &anx->cable_det_work);
-	return IRQ_HANDLED;
-}
-
-#ifdef CONFIG_LGE_ALICE_FRIENDS
-static const char *alice_friends_string(enum lge_alice_friends friends)
-{
-	static const char *const names[] = {
-		[LGE_ALICE_FRIENDS_NONE] = "None",
-		[LGE_ALICE_FRIENDS_CM] = "CM",
-		[LGE_ALICE_FRIENDS_HM] = "HM",
-		[LGE_ALICE_FRIENDS_HM_B] = "HM >= Rev.B",
-	};
-
-	if (friends < 0 || friends >= ARRAY_SIZE(names))
-		return "Undefined";
-
-	return names[friends];
-}
-
-static irqreturn_t ext_acc_en_irq_thread(int irq, void *_anx)
-{
-	struct anx7418 *anx = _anx;
 	struct device *cdev = &anx->client->dev;
-	int ext_acc_en;
+#ifdef CABLE_DET_PIN_HAS_GLITCH
+	int cable_det;
+#endif
 
-	ext_acc_en = gpio_get_value(anx->ext_acc_en_gpio);
-	dev_info(cdev, "ext_acc_en_gpio(%d)\n", ext_acc_en);
+	wake_lock_timeout(&anx->wlock, msecs_to_jiffies(2000));
 
-	if (ext_acc_en) {
-		dev_info(cdev, "HM: Device\n");
-
-		power_supply_set_usb_otg(anx->usb_psy, 0);
-		anx->dr = DUAL_ROLE_PROP_DR_DEVICE;
-	} else {
-		dev_info(cdev, "HM: Host\n");
-
-		power_supply_set_present(anx->usb_psy, false);
-
-		power_supply_set_usb_otg(anx->usb_psy, 1);
-		anx->dr = DUAL_ROLE_PROP_DR_HOST;
-	}
-
+	dev_info_ratelimited(cdev, "%s\n", __func__);
+#ifdef CABLE_DET_PIN_HAS_GLITCH
+	cable_det = confirmed_cable_det(anx);
+	if (cable_det != atomic_read(&anx->pwr_on))
+		cable_det_work(&anx->cable_det_work);
+	else if (anx->is_dbg_acc && !cable_det)
+		cable_det_work(&anx->cable_det_work);
+#else
+	queue_work_on(0, anx->wq, &anx->cable_det_work);
+#endif
 	return IRQ_HANDLED;
 }
-#endif
 
 static int firmware_update(struct anx7418 *anx)
 {
@@ -765,7 +854,6 @@ static int firmware_update(struct anx7418 *anx)
 	ktime_t diff;
 	int rc;
 
-	anx->otp = true;
 	__anx7418_pwr_on(anx);
 
 	anx->rom_ver = anx7418_read_reg(client, ANALOG_CTRL_3);
@@ -1030,7 +1118,7 @@ static int anx7418_gpio_configure(struct anx7418 *anx, bool on)
 				goto err_ext_acc_en_gpio_dir;
 			}
 
-			rc = gpio_direction_output(anx->ext_acc_en_gpio, 1);
+			rc = gpio_direction_output(anx->ext_acc_en_gpio, 0);
 			if (rc) {
 				dev_err(dev,
 					"unable to set dir for gpio[%d]\n",
@@ -1047,7 +1135,7 @@ static int anx7418_gpio_configure(struct anx7418 *anx, bool on)
 		if (gpio_is_valid(anx->ext_acc_en_gpio)) {
 			struct qpnp_pin_cfg cfg = {
 				.mode = QPNP_PIN_MODE_DIG_IN,
-				.pull = QPNP_PIN_GPIO_PULL_UP_31P5,
+				.pull = QPNP_PIN_GPIO_PULL_NO,
 				.vin_sel = QPNP_PIN_VIN2,
 				.out_strength = QPNP_PIN_OUT_STRENGTH_LOW,
 				.src_sel = QPNP_PIN_SEL_FUNC_CONSTANT,
@@ -1255,7 +1343,6 @@ static int anx7418_probe(struct i2c_client *client,
 
 	INIT_WORK(&anx->cable_det_work, cable_det_work);
 	INIT_WORK(&anx->i2c_work, i2c_work);
-	INIT_DELAYED_WORK(&anx->cc_status_work, cc_status_work);
 
 	anx->wq = alloc_workqueue("anx_wq",
 			WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_CPU_INTENSIVE,
@@ -1264,7 +1351,8 @@ static int anx7418_probe(struct i2c_client *client,
 		dev_err(&client->dev, "unable to create workqueue anx_wq\n");
 		return -ENOMEM;
 	}
-	mutex_init(&anx->mutex);
+	init_rwsem(&anx->rwsem);
+	wake_lock_init(&anx->wlock, WAKE_LOCK_SUSPEND, "anx_wlock");
 
 	anx->mode = DUAL_ROLE_PROP_MODE_NONE;
 	anx->pr = DUAL_ROLE_PROP_PR_NONE;
@@ -1273,32 +1361,23 @@ static int anx7418_probe(struct i2c_client *client,
 	rc = anx7418_gpio_configure(anx, true);
 	if (rc) {
 		dev_err(&client->dev, "gpio configure failed\n");
-		return rc;
+		goto err_gpio_config;
 	}
-
-#ifdef CONFIG_LGE_ALICE_FRIENDS
-	if (anx->friends == LGE_ALICE_FRIENDS_HM ||
-	    anx->friends == LGE_ALICE_FRIENDS_HM_B) {
-		anx->ext_acc_en_irq = gpio_to_irq(anx->ext_acc_en_gpio);
-		rc = devm_request_threaded_irq(&client->dev,
-			anx->ext_acc_en_irq,
-			NULL,
-			ext_acc_en_irq_thread,
-			IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-			"ext_acc_en", anx);
-		if (rc) {
-			dev_err(&client->dev, "Failed to request irq for ext_acc_en\n");
-			goto err_ext_acc_en;
-		}
-	}
-#endif
 
 	anx->cable_det_irq = gpio_to_irq(anx->cable_det_gpio);
 	irq_set_status_flags(anx->cable_det_irq, IRQ_NOAUTOEN);
+#ifdef CABLE_DET_PIN_HAS_GLITCH
+	rc = devm_request_threaded_irq(&client->dev, anx->cable_det_irq,
+			NULL,
+			cable_det_irq,
+			IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+			"cable_det_irq", anx);
+#else
 	rc = devm_request_irq(&client->dev, anx->cable_det_irq,
 			cable_det_irq,
 			IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 			"cable_det_irq", anx);
+#endif
 	if (rc) {
 		dev_err(&client->dev, "Failed to request irq for cable_det\n");
 		goto err_cable_det_req_irq;
@@ -1336,6 +1415,28 @@ static int anx7418_probe(struct i2c_client *client,
 
 	anx7418_debugfs_init(anx);
 
+#ifdef CONFIG_LGE_ALICE_FRIENDS
+	if (anx->friends == LGE_ALICE_FRIENDS_HM ||
+	    anx->friends == LGE_ALICE_FRIENDS_HM_B) {
+		anx->ext_acc_en_irq = gpio_to_irq(anx->ext_acc_en_gpio);
+		irq_set_status_flags(anx->ext_acc_en_irq, IRQ_NOAUTOEN);
+		rc = devm_request_threaded_irq(&client->dev, anx->ext_acc_en_irq,
+			NULL,
+			ext_acc_en_irq_thread,
+			IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+			"ext_acc_en", anx);
+		if (rc) {
+			dev_err(&client->dev, "Failed to request irq for ext_acc_en\n");
+			goto err_ext_acc_en;
+		}
+		enable_irq_wake(anx->ext_acc_en_irq);
+
+		mutex_init(&anx->hm_mutex);
+
+		anx->hm = devm_hm_instance_register(&client->dev);
+	}
+#endif
+
 	enable_irq(anx->cable_det_irq);
 	enable_irq(anx->client->irq);
 	if (gpio_get_value(anx->cable_det_gpio))
@@ -1349,14 +1450,17 @@ err_charger_init:
 err_drp_init:
 #endif
 err_update:
-	free_irq(client->irq, anx);
+	devm_free_irq(&client->dev, client->irq, anx);
 err_req_irq:
-	free_irq(anx->cable_det_irq, anx);
+	devm_free_irq(&client->dev, anx->cable_det_irq, anx);
 #ifdef CONFIG_LGE_ALICE_FRIENDS
 err_ext_acc_en:
 #endif
 err_cable_det_req_irq:
 	anx7418_gpio_configure(anx, false);
+err_gpio_config:
+	wake_lock_destroy(&anx->wlock);
+	destroy_workqueue(anx->wq);
 	return rc;
 }
 
@@ -1367,13 +1471,14 @@ static int anx7418_remove(struct i2c_client *client)
 
 	pr_info("%s\n", __func__);
 
-	free_irq(client->irq, anx);
-	free_irq(anx->cable_det_irq, anx);
+	devm_free_irq(&client->dev, client->irq, anx);
+	devm_free_irq(&client->dev, anx->cable_det_irq, anx);
 
 	if (atomic_read(&anx->pwr_on))
 		__anx7418_pwr_down(anx);
 
 	anx7418_gpio_configure(anx, false);
+	wake_lock_destroy(&anx->wlock);
 
 	return 0;
 }

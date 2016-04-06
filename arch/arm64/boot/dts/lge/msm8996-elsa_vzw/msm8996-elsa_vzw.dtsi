@@ -17,7 +17,6 @@
 #include "msm8996-elsa_vzw-sound.dtsi"
 #include "msm8996-elsa_vzw-connectivity.dtsi"
 #include "msm8996-elsa_vzw-nfc.dtsi"
-#include "msm8996-elsa_vzw-tdmb.dtsi"
 #include "msm8996-elsa_vzw-hdmi.dtsi"
 #include "msm8996-elsa_vzw-fingerprint.dtsi"
 #include "msm8996-elsa_vzw-usb.dtsi"
@@ -288,6 +287,17 @@
 		status = "disabled";
 	};
 
+	chan@78 {
+		label = "acc_nt";
+		reg = <0x78>;
+		qcom,decimation = <0>;
+		qcom,pre-div-channel-scaling = <0>;
+		qcom,calibration-type = "ratiometric";
+		qcom,scale-function = <0>;
+		qcom,hw-settle-time = <5>;
+		qcom,fast-avg-setup = <0>;
+	};
+
 	chan@79 {
 		label = "usb_id_lv_pu";
 		reg = <0x79>;
@@ -463,18 +473,10 @@
 &usb3 {
 	status = "ok";
 	qcom,dwc-vadc = <&pm8994_vadc>;
+	qcom,usbin-vadc = <&pmi8994_vadc>;
 };
 
 &pmi8994_gpios {
-	gpio@c100 {	/* GPIO 2  SPKR_SD_N */
-		qcom,mode = <1>;	/* DIGITAL OUT */
-		qcom,pull = <5>;	/* No Pull */
-		qcom,vin-sel = <2>;	/* 1.8 */
-		qcom,src-sel = <0>;	/* CONSTANT */
-		qcom,master-en = <1>;	/* ENABLE GPIO */
-		status = "okay";
-	};
-
 	gpio@c200 {	/* GPIO 3 SPKR_SD_N */
 		qcom,mode = <1>;	/* DIGITAL OUT */
 		qcom,pull = <5>;	/* No Pull */
@@ -503,26 +505,7 @@
 		status = "okay";
 	};
 
-	gpio@c800 { /* GPIO 9 - Rome 3.3V control */
-		qcom,mode = <1>;		/* Digital output */
-		qcom,output-type = <0>;		/* MOS logic */
-		qcom,invert = <1>;		/* Output high */
-		qcom,vin-sel = <0>;		/* VPH_PWR */
-		qcom,src-sel = <0>;		/* Constant */
-		qcom,out-strength = <1>;	/* High drive strength */
-		qcom,master-en = <1>;		/* Enable GPIO */
-		status = "okay";
-	};
-
 	gpio@c100 { /* GPIO 2 */
-		qcom,mode = <0>;
-		qcom,pull = <0>;
-		qcom,vin-sel = <2>;
-		qcom,src-sel = <0>;
-		status = "okay";
-	};
-
-	gpio@c300 { /* GPIO 4 */
 		qcom,mode = <0>;
 		qcom,pull = <0>;
 		qcom,vin-sel = <2>;
@@ -538,17 +521,6 @@
 		qcom,vin-sel = <2>;
 		qcom,src-sel = <0>;
 		qcom,out-strength = <2>;
-		qcom,master-en = <1>;
-		status = "okay";
-	};
-
-	gpio@cc00 { /* GPIO 13 - HPH_EN0 */
-		qcom,mode = <1>;
-		qcom,output-type = <0>;
-		qcom,pull = <5>;
-		qcom,vin-sel = <2>;
-		qcom,out-strength = <1>;
-		qcom,src-sel = <2>;
 		qcom,master-en = <1>;
 		status = "okay";
 	};
@@ -571,16 +543,6 @@
 		qcom,vin-sel = <2>;		/* VIN 2 */
 		qcom,src-sel = <3>;		/* Function 2 */
 		qcom,out-strength = <2>;	/* Medium */
-		qcom,master-en = <1>;		/* Enable GPIO */
-		status = "okay";
-	};
-
-	gpio@d200 { /* GPIO 19 - Rome BT Reset */
-		qcom,mode = <1>;		/* Digital output*/
-		qcom,pull = <4>;		/* Pulldown 10uA */
-		qcom,vin-sel = <2>;		/* VIN2 */
-		qcom,src-sel = <0>;		/* GPIO */
-		qcom,invert = <0>;		/* Invert */
 		qcom,master-en = <1>;		/* Enable GPIO */
 		status = "okay";
 	};

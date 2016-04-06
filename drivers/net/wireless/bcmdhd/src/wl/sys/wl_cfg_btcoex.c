@@ -452,6 +452,42 @@ int wl_cfg80211_set_btcoex_allow_bt_inquiry(struct net_device *dev, char *comman
 	return (ret == 0) ? strlen("OK") : strlen("FAILED");
 
 }
+
+int wl_cfg80211_set_btcoex_bt_preference(struct net_device *dev, char *command, bool enabled)
+{
+	#define WLAN_PREFER 0
+	#define BT_PREFER 1
+
+	int ret = 0;
+	static const uint32 btc_params_preference[2][2] = {{45000, 5}, {25000, 4}};		// btc_params8 and btc_params33
+	uint32 reg8, reg33, regaddr;
+
+	dev_wlc_intvar_get_reg(dev, "btc_params", 8,  &reg8);
+	dev_wlc_intvar_get_reg(dev, "btc_params", 33,  &reg33);
+
+	if(enabled && reg8 == btc_params_preference[BT_PREFER][0] && reg33 == btc_params_preference[BT_PREFER][1])
+	{
+		WL_INFORM(("btc param has bt preference already \n"));
+	}  else if (!enabled && reg8 == btc_params_preference[WLAN_PREFER][0]
+		&& reg33 == btc_params_preference[WLAN_PREFER][1])
+	{
+		WL_INFORM(("btc param has wlan preference already \n"));
+	}
+	else {
+		WL_ERR(("btc param has been set to %s preference \n", enabled ? "BT" : "WLAN"));
+		regaddr = 8;
+		ret = dev_wlc_intvar_set_reg(dev, "btc_params",
+							(char *)&regaddr, (char *)&btc_params_preference[enabled][0]);
+		regaddr = 33;
+		ret = dev_wlc_intvar_set_reg(dev, "btc_params",
+							(char *)&regaddr, (char *)&btc_params_preference[enabled][1]);
+	}
+
+	snprintf(command, 3, "OK");
+
+	return (strlen("OK"));
+
+}
 #endif /* CUSTOMER_HW10 */
 
 int wl_cfg80211_set_btcoex_dhcp(struct net_device *dev, dhd_pub_t *dhd, char *command)

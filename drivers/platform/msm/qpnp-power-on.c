@@ -681,12 +681,6 @@ qpnp_get_cfg(struct qpnp_pon *pon, u32 pon_type)
 	return NULL;
 }
 
-
-#define KEY_CRASH_TIMEOUT 5000
-int gen_key_panic = 0;
-int key_crash_cnt = 0;
-unsigned long key_crash_last_time = 0;
-
 static int
 qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 {
@@ -694,8 +688,6 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	struct qpnp_pon_config *cfg = NULL;
 	u8 pon_rt_sts = 0, pon_rt_bit = 0;
 	u32 key_status;
-	unsigned long cur_time = 0;
-	unsigned long key_crash_gap = 0;
 
 	cfg = qpnp_get_cfg(pon, pon_type);
 	if (!cfg)
@@ -745,41 +737,6 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		wake_lock_timeout(&pon->chg_logo_wake_lock, msecs_to_jiffies(500));
 	}
 #endif
-
-	if (key_status && cfg->key_code == 114) {
-		if (key_crash_cnt % 3 == 0) {
-			cur_time = jiffies_to_msecs(jiffies);
-			key_crash_gap = cur_time - key_crash_last_time;
-			if (key_crash_gap > KEY_CRASH_TIMEOUT)
-				key_crash_cnt = 1;
-			else
-				key_crash_cnt++;
-			key_crash_last_time = cur_time;
-			pr_err("Ready to panic : count %d time gap %ld\n", key_crash_cnt, key_crash_gap);
-		} else {
-			key_crash_cnt = 0;
-			pr_err("Ready to panic : cleared!\n");
-		}
-	} else if (key_status && cfg->key_code == 116) {
-		if (key_crash_cnt % 3 == 1) {
-			cur_time = jiffies_to_msecs(jiffies);
-			key_crash_gap = cur_time - key_crash_last_time;
-			if (key_crash_gap > KEY_CRASH_TIMEOUT)
-				key_crash_cnt = 0;
-			else
-				key_crash_cnt++;
-			key_crash_last_time = cur_time;
-			pr_err("Ready to panic : count %d time gap %ld\n", key_crash_cnt, key_crash_gap);
-		} else {
-			key_crash_cnt = 0;
-			pr_err("Ready to panic : cleared!\n");
-		}
-	}
-
-	if (key_crash_cnt >= 7 && gen_key_panic == 0) {
-		gen_key_panic = 1;
-		panic("Generate panic by key!\n");
-	}
 
 	/* simulate press event in case release event occured
 	 * without a press event

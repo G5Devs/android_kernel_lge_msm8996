@@ -6691,8 +6691,14 @@ static void ufshcd_apply_pm_quirks(struct ufs_hba *hba)
 static int ufshcd_probe_hba(struct ufs_hba *hba)
 {
 	int ret;
+#ifdef CONFIG_MACH_LGE
+	int lge_flag = 0;
+#endif
 	ktime_t start = ktime_get();
 
+#ifdef CONFIG_MACH_LGE
+lge_retry:
+#endif
 	ret = ufshcd_link_startup(hba);
 	if (ret)
 		goto out;
@@ -6711,8 +6717,20 @@ static int ufshcd_probe_hba(struct ufs_hba *hba)
 		goto out;
 
 	ret = ufshcd_complete_dev_init(hba);
+#ifdef CONFIG_MACH_LGE
+	if (ret) {
+		if (!lge_flag) {
+			lge_flag = 1;
+			printk("[LGE] : goto link startup again!!\n");
+			goto lge_retry;
+		}
+		else
+			goto out;
+	}
+#else
 	if (ret)
 		goto out;
+#endif
 
 	ufs_advertise_fixup_device(hba);
 	ufshcd_tune_unipro_params(hba);

@@ -440,6 +440,17 @@ int lge_get_bootreason(void)
 	return lge_boot_reason;
 }
 
+int on_hidden_reset;
+
+static int __init lge_check_hidden_reset(char *reset_mode)
+{
+	if (!strncmp(reset_mode, "on", 2))
+		on_hidden_reset = 1;
+
+	return 1;
+}
+__setup("lge.hreset=", lge_check_hidden_reset);
+
 static int lge_mfts_mode = 0;
 
 static int __init lge_check_mfts_mode(char *s)
@@ -476,6 +487,30 @@ int lge_get_bootreason_with_lcd_dimming(void)
 	return ret;
 }
 #endif
+
+/*
+   for download complete using LAF image
+   return value : 1 --> right after laf complete & reset
+ */
+
+int android_dlcomplete = 0;
+
+int __init lge_android_dlcomplete(char *s)
+{
+	if(strncmp(s,"1",1) == 0)
+		android_dlcomplete = 1;
+	else
+		android_dlcomplete = 0;
+	printk("androidboot.dlcomplete = %d\n", android_dlcomplete);
+
+	return 1;
+}
+__setup("androidboot.dlcomplete=", lge_android_dlcomplete);
+
+int lge_get_android_dlcomplete(void)
+{
+	return android_dlcomplete;
+}
 
 #ifdef CONFIG_LGE_ALICE_FRIENDS
 static enum lge_alice_friends lge_alice_friends = LGE_ALICE_FRIENDS_NONE;

@@ -346,6 +346,13 @@ int16_t OffsetCalibration(void)
 		//VL53L0_GetOffsetCalibrationDataMicroMeter(Dev, &OffsetCalibrationDataMicroMeter);
 		VL53L0_PerformOffsetCalibration(Dev, 200<<16, &offsetComp); //(100) is 100mm target dis, &offsetComp is return
 		offsetComp = offsetComp - st_offset;
+		
+		if ((offsetComp < 31000) && (offsetComp > (-63000))) {
+			pr_err("OffsetCalibration: spec in!\n");
+		} else {
+			VL53L0_RestoreOffset(Dev, st_offset);
+			pr_err("OffsetCalibration: spec out!\n");
+		}		
 		pr_err("offsetComp:%d OffsetCalibrationDataMicroMeter: %d!\n",offsetComp, st_offset);
     }
 	else if(moduleVersion == 0) //cut1.0
@@ -2207,7 +2214,7 @@ int msm_init_proxy_EwokAPI(void)
 	
 	{ // forced x-talk cal
 		
-	XTalkCompMegaCps = 32;
+	XTalkCompMegaCps = 24;
 	//Enable the XTalk compensation
 	if (Status == VL53L0_ERROR_NONE) {
 		Status = VL53L0_SetXTalkCompensationEnable(Dev, 1);

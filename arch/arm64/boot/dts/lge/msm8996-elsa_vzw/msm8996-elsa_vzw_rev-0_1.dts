@@ -17,7 +17,6 @@
 #include "msm8996-elsa_vzw.dtsi"
 #include "msm8996-elsa_vzw-touch.dtsi"
 #include "msm8996-elsa_vzw-camera-rev-0_1.dtsi"
-#include "msm8996-elsa_vzw-fingerprint-rev-0_1.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. MSM 8996 v2 + PMI8994 MTP";
@@ -169,14 +168,6 @@
 
 /* set unused gpio to off */
 &pm8994_gpios {
-	gpio@c500 { /* GPIO 6 - FPC LDO_EN */
-		qcom,mode = <1>;                /* Digital output*/
-		qcom,vin-sel = <2>;             /* VIN2 */
-		qcom,src-sel = <0>;             /* GPIO */
-		qcom,master-en = <1>;           /* Enable GPIO */
-		status = "okay";
-	};
-
 	gpio@c600 { /* PM GPIO 7 */
 		status = "okay";
 		qcom,master-en = <0x0>;

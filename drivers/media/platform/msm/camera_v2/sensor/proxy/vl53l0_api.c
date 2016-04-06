@@ -3028,6 +3028,17 @@ VL53L0_API VL53L0_Error VL53L0_PerformXTalk(VL53L0_DEV Dev,
     return Status;
 }
 
+VL53L0_API VL53L0_Error VL53L0_RestoreOffset(VL53L0_DEV Dev,
+            int32_t OffsetMicroMeter){
+
+    VL53L0_Error Status = VL53L0_ERROR_NONE;
+	VL53L0_DeviceParameters_t CurrentParameters;
+    
+    VL53L0_SETPARAMETERFIELD(Dev, RangeOffsetMicroMeters, OffsetMicroMeter);
+    Status = VL53L0_SetOffsetCalibrationDataMicroMeter(Dev, OffsetMicroMeter);
+
+    return Status;
+}
 
 
 VL53L0_API VL53L0_Error VL53L0_PerformOffsetCalibration(VL53L0_DEV Dev,
@@ -3111,16 +3122,8 @@ VL53L0_API VL53L0_Error VL53L0_PerformOffsetCalibration(VL53L0_DEV Dev,
 
         /* Apply the calculated offset */
 		if (Status == VL53L0_ERROR_NONE) {
-			if ((*pOffsetMicroMeter < 31000) && (*pOffsetMicroMeter > (-63000))) {
 				VL53L0_SETPARAMETERFIELD(Dev, RangeOffsetMicroMeters, *pOffsetMicroMeter);
 				Status = VL53L0_SetOffsetCalibrationDataMicroMeter(Dev, *pOffsetMicroMeter);
-				}
-			else {
-				if (SequenceStepEnabled != 0) {
-					Status = VL53L0_SetSequenceStepEnable(Dev,VL53L0_SEQUENCESTEP_TCC, 1);
-					}
-				Status = VL53L0_ERROR_RANGE_ERROR;
-			}
 		}
 
     }

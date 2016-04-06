@@ -40,6 +40,7 @@
 #include <linux/regulator/driver.h>
 #include <linux/input/lge_touch_notify.h>
 int panel_not_connected;
+int skip_lcd_error_check;
 #endif
 
 #if defined(CONFIG_LGE_DISPLAY_AOD_SUPPORTED)
@@ -218,6 +219,28 @@ static int mdss_dsi_regulator_init(struct platform_device *pdev,
 	return rc;
 }
 
+#if defined(CONFIG_LGE_MIPI_H1_INCELL_QHD_CMD_PANEL)
+int detect_factory_cable(void)
+{
+	int factory_cable = 0;
+
+	switch (lge_get_boot_mode()) {
+		case LGE_BOOT_MODE_QEM_56K:
+		case LGE_BOOT_MODE_QEM_130K:
+		case LGE_BOOT_MODE_QEM_910K:
+		case LGE_BOOT_MODE_PIF_56K:
+		case LGE_BOOT_MODE_PIF_130K:
+		case LGE_BOOT_MODE_PIF_910K:
+			factory_cable = 1;
+			break;
+		default:
+			break;
+	}
+
+	return factory_cable;
+}
+#endif
+
 #ifdef CONFIG_LGE_LCD_POWER_CTRL
 static int lge_panel_power_off(struct mdss_panel_data *pdata)
 {
@@ -232,10 +255,14 @@ static int lge_panel_power_off(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
-	if (mdss_dsi_is_right_ctrl(ctrl_pdata)) {
-		pr_err("%s:%d, right ctrl configuration not needed\n",
-			__func__, __LINE__);
-		return ret;
+	pr_err("[Display] %s+: ndx=%d\n", __func__, ctrl_pdata->ndx);
+
+	if (!(panel_not_connected && detect_factory_cable() && !lge_get_mfts_mode())) {
+		if (mdss_dsi_is_right_ctrl(ctrl_pdata)) {
+			pr_err("%s:%d, right ctrl configuration not needed\n",
+				__func__, __LINE__);
+			return ret;
+		}
 	}
 
 	ret = msm_dss_set_vreg(ctrl_pdata->panel_power_data.vreg_config,
@@ -298,6 +325,8 @@ static int lge_panel_power_off(struct mdss_panel_data *pdata)
 	else
 		pr_info("%s: enable ttw mode\n", __func__);
 
+	pr_err("[Display] %s-: ndx=%d\n", __func__, ctrl_pdata->ndx);
+
 	return ret;
 }
 
@@ -314,10 +343,14 @@ static int lge_panel_power_on(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 			panel_data);
 
-	if (mdss_dsi_is_right_ctrl(ctrl_pdata)) {
-		pr_err("%s:%d, right ctrl configuration not needed\n",
-			__func__, __LINE__);
-		return ret;
+	pr_err("[Display] %s+: ndx=%d\n", __func__, ctrl_pdata->ndx);
+
+	if (!(panel_not_connected && detect_factory_cable() && !lge_get_mfts_mode())) {
+		if (mdss_dsi_is_right_ctrl(ctrl_pdata)) {
+			pr_err("%s:%d, right ctrl configuration not needed\n",
+				__func__, __LINE__);
+			return ret;
+		}
 	}
 
 	if (gpio_is_valid(ctrl_pdata->vddio_en_gpio)) {
@@ -362,6 +395,8 @@ static int lge_panel_power_on(struct mdss_panel_data *pdata)
 		else
 			pr_info("%s: panel reset on\n",__func__);
 	}
+
+	pr_err("[Display] %s-: ndx=%d\n", __func__, ctrl_pdata->ndx);
 
 	return ret;
 }
@@ -3655,6 +3690,14 @@ static int mdss_dsi_parse_gpio_params(struct platform_device *ctrl_pdev,
 	panel_not_connected = lge_get_lk_panel_status();
 	pr_debug("%s: lk panel init fail[%d]\n",
 			__func__, panel_not_connected);
+
+	if (detect_factory_cable()){
+		pr_info("boot mode : factory cable detected\n");
+		if (!lge_get_mfts_mode() && panel_not_connected){
+			skip_lcd_error_check = 1;
+			pr_info("no MFTS and panel not connected. will skip lcd error check routine\n");
+		}
+	}
 #endif
 	return 0;
 }

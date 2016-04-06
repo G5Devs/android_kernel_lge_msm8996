@@ -18,8 +18,13 @@
 #include <linux/regulator/rpm-smd-regulator.h>
 #include <linux/regulator/consumer.h>
 
+#if 0
 #undef CDBG
 #define CDBG(fmt, args...) pr_err(fmt, ##args)
+#else
+#undef CDBG
+#define CDBG(fmt, args...) do { }while(0)
+#endif
 
 /* LGE_CHANGE_S, LGE Preview tunning for lowlight, dongjin.ha */
 #if defined(CONFIG_LGE_CAM_PREVIEW_TUNE)

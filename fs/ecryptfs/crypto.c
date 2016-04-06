@@ -35,15 +35,12 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <asm/unaligned.h>
-#include <linux/ecryptfs.h>
 #include "ecryptfs_kernel.h"
 
 #ifdef CONFIG_CRYPTO_CCMODE
 #include <linux/cc_mode.h>
 #include <crypto/rng.h>
-#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 #include <crypto/hash.h>
-#endif
 #endif // CONFIG_CRYPTO_CCMODE
 #define DECRYPT		0
 #define ENCRYPT		1
@@ -99,7 +96,7 @@ out:
 	if (filp) filp_close(filp, NULL);
 	return err;
 }
-#endif
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 /**
  * crypto_fips_rng_get_bytes
  * @data: Buffer to get random bytes
@@ -116,7 +113,7 @@ static int crypto_sec_rng_get_bytes(u8 *data, unsigned int len)
 		rng = crypto_alloc_rng("qrng", 0, 0);
 #else
 		rng = crypto_alloc_rng("fips(ansi_cprng)", 0, 0);
-#endif
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 		err = PTR_ERR(rng);
 		if (IS_ERR(rng))
 			goto out;
@@ -127,7 +124,7 @@ static int crypto_sec_rng_get_bytes(u8 *data, unsigned int len)
 				crypto_free_rng(rng);
 			goto out;
 		}
-#endif
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 		crypto_sec_rng = rng;
 	}
 
@@ -143,7 +140,7 @@ static int crypto_sec_rng_get_bytes(u8 *data, unsigned int len)
 		ecryptfs_printk(KERN_ERR, "Error getting random bytes in SEC mode (err=%d, len=%d)\n", err, len);
 		ecryptfs_printk(KERN_ERR, " [CCAudit] Error getting random bytes in SEC mode (err=%d, len=%d)\n", err, len);
 	}
-#endif
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 
 out:
 	return err;
@@ -196,7 +193,6 @@ void ecryptfs_from_hex(char *dst, char *src, int dst_size)
  * Uses the allocated crypto context that crypt_stat references to
  * generate the SHA256 sum of the contents of src.
  */
-#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 struct hash_result {
 	struct completion completion;
 	int err;
@@ -212,7 +208,63 @@ static void hash_complete(struct crypto_async_request *req, int err)
 	res->err = err;
 	complete(&res->completion);
 }
-#endif
+
+static int ecryptfs_calculate_sha256_qct_hw(char *dst,
+                  struct ecryptfs_crypt_stat *crypt_stat,
+                  char *src, int len)
+{
+    struct scatterlist sg;
+    struct hash_desc desc = {
+        .tfm = crypt_stat->hash_tfm,
+        .flags = CRYPTO_TFM_REQ_MAY_SLEEP
+    };
+    int rc = 0;
+    struct hash_result result;
+    struct crypto_ahash *tfm;
+    struct ahash_request *req;
+
+    mutex_lock(&crypt_stat->cs_hash_tfm_mutex);
+    sg_init_one(&sg, (u8 *)src, len);
+    if (!desc.tfm) {
+        tfm = crypto_alloc_ahash("qcom-sha256", 0, 0);
+        if (IS_ERR(tfm)) {
+            pr_err("failed to load transform %ld\n", PTR_ERR(tfm));
+            mutex_unlock(&crypt_stat->cs_hash_tfm_mutex);
+            return -1;
+        }
+
+        init_completion(&result.completion);
+
+        req = ahash_request_alloc(tfm, GFP_KERNEL);
+        if (!req) {
+            pr_err("ahash request allocation failure\n");
+            rc = -1;
+            goto out;
+        }
+
+        ahash_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG, hash_complete, &result);
+    }
+
+    ahash_request_set_crypt(req, &sg, dst, len);
+
+    rc = crypto_ahash_digest(req);
+
+    if (rc == -EINPROGRESS || rc == -EBUSY) {
+        rc = wait_for_completion_interruptible(&result.completion);
+        if (!rc)
+            rc = result.err;
+        init_completion(&result.completion);
+    }
+
+    ahash_request_free(req);
+
+out:
+    crypto_free_ahash(tfm);
+    mutex_unlock(&crypt_stat->cs_hash_tfm_mutex);
+    return rc;
+}
+
+#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 static int ecryptfs_calculate_sha256(char *dst,
 				  struct ecryptfs_crypt_stat *crypt_stat,
 				  char *src, int len)
@@ -223,34 +275,10 @@ static int ecryptfs_calculate_sha256(char *dst,
 		.flags = CRYPTO_TFM_REQ_MAY_SLEEP
 	};
 	int rc = 0;
-#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
-	struct hash_result result;
-	struct crypto_ahash *tfm;
-	struct ahash_request *req;
-#endif
 
 	mutex_lock(&crypt_stat->cs_hash_tfm_mutex);
 	sg_init_one(&sg, (u8 *)src, len);
 	if (!desc.tfm) {
-#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
-		tfm = crypto_alloc_ahash("qcom-sha256", 0, 0);
-		if (IS_ERR(tfm)) {
-			pr_err("failed to load transform %ld\n", PTR_ERR(tfm));
-			mutex_unlock(&crypt_stat->cs_hash_tfm_mutex);
-			return -1;
-		}
-
-		init_completion(&result.completion);
-
-		req = ahash_request_alloc(tfm, GFP_KERNEL);
-		if (!req) {
-			pr_err("ahash request allocation failure\n");
-			rc = -1;
-			goto out;
-		}
-
-		ahash_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG, hash_complete, &result);
-#else
 		desc.tfm = crypto_alloc_hash(ECRYPTFS_SHA256_HASH, 0,
 					     CRYPTO_ALG_ASYNC);
 		if (IS_ERR(desc.tfm)) {
@@ -261,22 +289,8 @@ static int ecryptfs_calculate_sha256(char *dst,
 			goto out;
 		}
 		crypt_stat->hash_tfm = desc.tfm;
-#endif
-	}
-#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
-    ahash_request_set_crypt(req, &sg, dst, len);
-
-	rc = crypto_ahash_digest(req);
-
-	if (rc == -EINPROGRESS || rc == -EBUSY) {
-		rc = wait_for_completion_interruptible(&result.completion);
-		if (!rc)
-			rc = result.err;
-		init_completion(&result.completion);
 	}
 
-	ahash_request_free(req);
-#else
 	rc = crypto_hash_init(&desc);
 	if (rc) {
 		printk(KERN_ERR
@@ -298,16 +312,14 @@ static int ecryptfs_calculate_sha256(char *dst,
 		       __func__, rc);
 		goto out;
 	}
-#endif
 out:
-#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
-    crypto_free_ahash(tfm);
-#endif
 	mutex_unlock(&crypt_stat->cs_hash_tfm_mutex);
 	return rc;
 }
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 #endif // CONFIG_CRYPTO_CCMODE
 
+#ifndef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 /**
  * ecryptfs_calculate_md5 - calculates the md5 of @src
  * @dst: Pointer to 16 bytes of allocated memory
@@ -380,40 +392,30 @@ out:
 	mutex_unlock(&crypt_stat->cs_hash_tfm_mutex);
 	return rc;
 }
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 
 static int ecryptfs_crypto_api_algify_cipher_name(char **algified_name,
 						  char *cipher_name,
 						  char *chaining_modifier)
 {
-#ifndef CONFIG_CRYPTO_DEV_KFIPS
 	int cipher_name_len = strlen(cipher_name);
 	int chaining_modifier_len = strlen(chaining_modifier);
-#else
-	int cipher_name_len;
-	int chaining_modifier_len;
-#endif
 	int algified_name_len;
 	int rc;
 
-#ifdef CONFIG_CRYPTO_DEV_KFIPS
-	if (!strcmp(cipher_name, "aes") &&
-			(!strcmp(chaining_modifier, "cbc") ||
-			!strcmp(chaining_modifier, "xts")))
-		cipher_name = "fipsaes";
-
-		cipher_name_len = strlen(cipher_name);
-		chaining_modifier_len = strlen(chaining_modifier);
-#endif
-
-#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
-    if (!strcmp(cipher_name, "aes") &&
+#if defined(CONFIG_CRYPTO_CCMODE) && defined(CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD)
+	int cc_flag;
+    cc_flag = get_cc_mode_state();
+    if ((cc_flag & FLAG_CC_MODE) == FLAG_CC_MODE) {
+    	if (!strcmp(cipher_name, "aes") &&
             (!strcmp(chaining_modifier, "cbc") ||
             !strcmp(chaining_modifier, "xts")))
-        chaining_modifier ="qcom-cbc";
+        	chaining_modifier ="qcom-cbc";
 
-        cipher_name_len = strlen(cipher_name);
-        chaining_modifier_len = strlen(chaining_modifier);
-#endif
+        	cipher_name_len = strlen(cipher_name);
+        	chaining_modifier_len = strlen(chaining_modifier);
+	}
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 
 	algified_name_len = (chaining_modifier_len + cipher_name_len + 3);
 	(*algified_name) = kmalloc(algified_name_len, GFP_KERNEL);
@@ -470,11 +472,17 @@ int ecryptfs_derive_iv(char *iv, struct ecryptfs_crypt_stat *crypt_stat,
 	/* Check if cc mode is enabled.*/
 	cc_flag = get_cc_mode_state();
 	if ((cc_flag & FLAG_CC_MODE) == FLAG_CC_MODE)
-		rc = ecryptfs_calculate_sha256(dst, crypt_stat, src, (crypt_stat->iv_bytes + 16));
+		rc = ecryptfs_calculate_sha256_qct_hw(dst, crypt_stat, src, (crypt_stat->iv_bytes + 16));
 	else
-#endif // CONFIG_CRYPTO_CCMODE
+#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
+		rc = ecryptfs_calculate_sha256(dst, crypt_stat, src, (crypt_stat->iv_bytes + 16));
+#else
+	    rc = ecryptfs_calculate_md5(dst, crypt_stat, src, (crypt_stat->iv_bytes + 16));
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
+#else
 	rc = ecryptfs_calculate_md5(dst, crypt_stat, src,
 				    (crypt_stat->iv_bytes + 16));
+#endif //CONFIG_CRYPTO_CCMODE
 	if (rc) {
 		ecryptfs_printk(KERN_WARNING, "Error attempting to compute "
 				"MD5 while generating IV for a page\n");
@@ -634,9 +642,9 @@ static int crypt_scatterlist(struct ecryptfs_crypt_stat *crypt_stat,
 	       || !(crypt_stat->flags & ECRYPTFS_STRUCT_INITIALIZED));
 	if (unlikely(ecryptfs_verbosity > 0)) {
 		ecryptfs_printk(KERN_DEBUG, "Key size [%zd]; key:\n",
-				ecryptfs_get_key_size_to_enc_data(crypt_stat));
+				crypt_stat->key_size);
 		ecryptfs_dump_hex(crypt_stat->key,
-				ecryptfs_get_key_size_to_enc_data(crypt_stat));
+				  crypt_stat->key_size);
 	}
 
 	init_completion(&ecr.completion);
@@ -655,7 +663,7 @@ static int crypt_scatterlist(struct ecryptfs_crypt_stat *crypt_stat,
 	/* Consider doing this once, when the file is opened */
 	if (!(crypt_stat->flags & ECRYPTFS_KEY_SET)) {
 		rc = crypto_ablkcipher_setkey(crypt_stat->tfm, crypt_stat->key,
-				ecryptfs_get_key_size_to_enc_data(crypt_stat));
+					      crypt_stat->key_size);
 		if (rc) {
 			ecryptfs_printk(KERN_ERR,
 					"Error setting key; rc = [%d]\n",
@@ -759,32 +767,6 @@ out:
 	return rc;
 }
 
-static void init_ecryption_parameters(bool *hw_crypt, bool *cipher_supported,
-				struct ecryptfs_crypt_stat *crypt_stat)
-{
-	unsigned char final[2*ECRYPTFS_MAX_CIPHER_NAME_SIZE+1];
-
-	if (!hw_crypt || !cipher_supported)
-		return;
-
-	*cipher_supported = false;
-	*hw_crypt = false;
-
-	if (get_events() && get_events()->is_cipher_supported_cb) {
-		*cipher_supported =
-			get_events()->is_cipher_supported_cb(
-				ecryptfs_get_full_cipher(crypt_stat->cipher,
-				crypt_stat->cipher_mode, final, sizeof(final)));
-		if (*cipher_supported) {
-			/**
-			 * we should apply external algorythm
-			 * assume that is_hw_crypt() cbck is supplied
-			 */
-			*hw_crypt = get_events()->is_hw_crypt_cb();
-		}
-	}
-}
-
 /**
  * ecryptfs_encrypt_page
  * @page: Page mapped from the eCryptfs inode for the file; contains
@@ -810,17 +792,11 @@ int ecryptfs_encrypt_page(struct page *page)
 	loff_t extent_offset;
 	loff_t lower_offset;
 	int rc = 0;
-	bool is_hw_crypt;
-	bool is_cipher_supported;
-
 
 	ecryptfs_inode = page->mapping->host;
 	crypt_stat =
 		&(ecryptfs_inode_to_private(ecryptfs_inode)->crypt_stat);
 	BUG_ON(!(crypt_stat->flags & ECRYPTFS_ENCRYPTED));
-
-	init_ecryption_parameters(&is_hw_crypt,
-		&is_cipher_supported, crypt_stat);
 
 	enc_extent_page = alloc_page(GFP_USER);
 	if (!enc_extent_page) {
@@ -831,53 +807,29 @@ int ecryptfs_encrypt_page(struct page *page)
 				"encrypted extent\n");
 		goto out;
 	}
-	if (is_hw_crypt) {
-		/* no need for encryption */
-	} else {
-		for (extent_offset = 0;
-			extent_offset <
-			(PAGE_CACHE_SIZE / crypt_stat->extent_size);
-			extent_offset++) {
 
-			if (is_cipher_supported) {
-				if (!get_events()->encrypt_cb) {
-					rc = -EPERM;
-					goto out;
-				}
-				rc = get_events()->encrypt_cb(page,
-					enc_extent_page,
-					ecryptfs_inode_to_lower(
-						ecryptfs_inode),
-						extent_offset);
-			} else {
-				rc = crypt_extent(crypt_stat,
-					enc_extent_page, page,
+	for (extent_offset = 0;
+		extent_offset < (PAGE_CACHE_SIZE / crypt_stat->extent_size);
+		extent_offset++) {
+			rc = crypt_extent(crypt_stat, enc_extent_page, page,
 					extent_offset, ENCRYPT);
-			}
-			if (rc) {
-				ecryptfs_printk(KERN_ERR,
-				"%s: Error encrypting; rc = [%d]\n",
-				__func__, rc);
-				ecryptfs_printk(KERN_ERR,
-				" [CCAudit] %s: Error encrypting; rc = [%d]\n",
-				__func__, rc);
-				goto out;
-			}
+		if (rc) {
+			ecryptfs_printk(KERN_ERR,
+					"%s: Error encrypting; rc = [%d]\n",
+					__func__, rc);
+			ecryptfs_printk(KERN_ERR,
+					" [CCAudit] %s: Error encrypting; rc = [%d]\n",
+					__func__, rc);
+			goto out;
 		}
 	}
 
 	lower_offset = lower_offset_for_page(crypt_stat, page);
-	if (is_hw_crypt)
-		enc_extent_virt = kmap(page);
-	else
-		enc_extent_virt = kmap(enc_extent_page);
+	enc_extent_virt = kmap(enc_extent_page);
 
 	rc = ecryptfs_write_lower(ecryptfs_inode, enc_extent_virt, lower_offset,
 				  PAGE_CACHE_SIZE);
-	if (!is_hw_crypt)
-			kunmap(enc_extent_page);
-	else
-			kunmap(page);
+	kunmap(enc_extent_page);
 
 	if (rc < 0) {
 		ecryptfs_printk(KERN_ERR,
@@ -920,8 +872,6 @@ int ecryptfs_decrypt_page(struct page *page)
 	unsigned long extent_offset;
 	loff_t lower_offset;
 	int rc = 0;
-	bool is_cipher_supported;
-	bool is_hw_crypt;
 
 	ecryptfs_inode = page->mapping->host;
 	crypt_stat =
@@ -943,29 +893,10 @@ int ecryptfs_decrypt_page(struct page *page)
 		goto out;
 	}
 
-	init_ecryption_parameters(&is_hw_crypt,
-		&is_cipher_supported, crypt_stat);
-
-	if (is_hw_crypt) {
-		rc = 0;
-		return rc;
-	}
-
 	for (extent_offset = 0;
 	     extent_offset < (PAGE_CACHE_SIZE / crypt_stat->extent_size);
 	     extent_offset++) {
-		if (is_cipher_supported) {
-			if (!get_events()->decrypt_cb) {
-				rc = -EPERM;
-				goto out;
-			}
-
-			rc = get_events()->decrypt_cb(page, page,
-				ecryptfs_inode_to_lower(ecryptfs_inode),
-				extent_offset);
-
-		} else
-			rc = crypt_extent(crypt_stat, page, page,
+		rc = crypt_extent(crypt_stat, page, page,
 				  extent_offset, DECRYPT);
 
 		if (rc) {
@@ -1000,7 +931,7 @@ int ecryptfs_init_crypt_ctx(struct ecryptfs_crypt_stat *crypt_stat)
 			"Initializing cipher [%s]; strlen = [%d]; "
 			"key_size_bits = [%zd]\n",
 			crypt_stat->cipher, (int)strlen(crypt_stat->cipher),
-			ecryptfs_get_key_size_to_enc_data(crypt_stat) << 3);
+			crypt_stat->key_size << 3);
 	mutex_lock(&crypt_stat->cs_tfm_mutex);
 	if (crypt_stat->tfm) {
 		rc = 0;
@@ -1092,11 +1023,17 @@ int ecryptfs_compute_root_iv(struct ecryptfs_crypt_stat *crypt_stat)
 	/* Check if cc mode is enabled.*/
 	cc_flag = get_cc_mode_state();
 	if ((cc_flag & FLAG_CC_MODE) == FLAG_CC_MODE)
-		rc = ecryptfs_calculate_sha256(dst, crypt_stat, crypt_stat->key, crypt_stat->key_size);
+		rc = ecryptfs_calculate_sha256_qct_hw(dst, crypt_stat, crypt_stat->key, crypt_stat->key_size);
 	else
-#endif //CONFIG_CRYPTO_CCMODE
+#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
+		rc = ecryptfs_calculate_sha256(dst, crypt_stat, crypt_stat->key, crypt_stat->key_size);
+#else
+	    rc = ecryptfs_calculate_md5(dst, crypt_stat, crypt_stat->key, crypt_stat->key_size);
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
+#else
 	rc = ecryptfs_calculate_md5(dst, crypt_stat, crypt_stat->key,
-			ecryptfs_get_key_size_to_enc_data(crypt_stat));
+				    crypt_stat->key_size);
+#endif //CONFIG_CRYPTO_CCMODE
 	if (rc) {
 		ecryptfs_printk(KERN_WARNING, "Error attempting to compute "
 				"MD5 while generating root IV\n");
@@ -1125,38 +1062,6 @@ static void ecryptfs_generate_new_key(struct ecryptfs_crypt_stat *crypt_stat)
 		ecryptfs_dump_hex(crypt_stat->key,
 				  crypt_stat->key_size);
 	}
-}
-
-static int ecryptfs_generate_new_salt(struct ecryptfs_crypt_stat *crypt_stat)
-{
-	size_t salt_size = 0;
-	unsigned char final[2*ECRYPTFS_MAX_CIPHER_NAME_SIZE+1];
-
-	salt_size = ecryptfs_get_salt_size_for_cipher(
-			ecryptfs_get_full_cipher(crypt_stat->cipher,
-						 crypt_stat->cipher_mode,
-						 final, sizeof(final)));
-
-	if (0 == salt_size)
-		return 0;
-
-	if (!ecryptfs_check_space_for_salt(crypt_stat->key_size, salt_size)) {
-		ecryptfs_printk(KERN_WARNING, "not enough space for salt\n");
-		crypt_stat->flags |= ECRYPTFS_SECURITY_WARNING;
-		return -EINVAL;
-	}
-#ifdef CONFIG_CRYPTO_CCMODE
-	crypto_sec_rng_get_bytes(crypt_stat->key + crypt_stat->key_size, salt_size);
-#else
-	get_random_bytes(crypt_stat->key + crypt_stat->key_size, salt_size);
-#endif //CONFIG_CRYPTO_CCMODE
-	if (unlikely(ecryptfs_verbosity > 0)) {
-		ecryptfs_printk(KERN_DEBUG, "Generated new session salt:\n");
-		ecryptfs_dump_hex(crypt_stat->key + crypt_stat->key_size,
-				  salt_size);
-	}
-
-	return 0;
 }
 
 /**
@@ -1262,6 +1167,7 @@ int ecryptfs_new_file_context(struct inode *ecryptfs_inode)
 	struct ecryptfs_mount_crypt_stat *mount_crypt_stat =
 	    &ecryptfs_superblock_to_private(
 		    ecryptfs_inode->i_sb)->mount_crypt_stat;
+	int cipher_name_len;
 	int rc = 0;
 
 	ecryptfs_set_default_crypt_stat_vals(crypt_stat, mount_crypt_stat);
@@ -1277,19 +1183,16 @@ int ecryptfs_new_file_context(struct inode *ecryptfs_inode)
 		       "to the inode key sigs; rc = [%d]\n", rc);
 		goto out;
 	}
-	strlcpy(crypt_stat->cipher,
-	       mount_crypt_stat->global_default_cipher_name,
-	       sizeof(crypt_stat->cipher));
 
-	strlcpy(crypt_stat->cipher_mode,
-			mount_crypt_stat->global_default_cipher_mode,
-			sizeof(crypt_stat->cipher_mode));
-
+	cipher_name_len =
+		strlen(mount_crypt_stat->global_default_cipher_name);
+	memcpy(crypt_stat->cipher,
+			mount_crypt_stat->global_default_cipher_name,
+			cipher_name_len);
+	crypt_stat->cipher[cipher_name_len] = '\0';
 	crypt_stat->key_size =
 		mount_crypt_stat->global_default_cipher_key_size;
 	ecryptfs_generate_new_key(crypt_stat);
-	ecryptfs_generate_new_salt(crypt_stat);
-
 	rc = ecryptfs_init_crypt_ctx(crypt_stat);
 	if (rc) {
 		ecryptfs_printk(KERN_ERR, "Error initializing cryptographic "
@@ -1422,8 +1325,7 @@ ecryptfs_cipher_code_str_map[] = {
 	{"twofish", RFC2440_CIPHER_TWOFISH},
 	{"cast6", RFC2440_CIPHER_CAST_6},
 	{"aes", RFC2440_CIPHER_AES_192},
-	{"aes", RFC2440_CIPHER_AES_256},
-	{"aes_xts", RFC2440_CIPHER_AES_XTS_256}
+	{"aes", RFC2440_CIPHER_AES_256}
 };
 
 /**
@@ -1450,11 +1352,6 @@ u8 ecryptfs_code_for_cipher_string(char *cipher_name, size_t key_bytes)
 			break;
 		case 32:
 			code = RFC2440_CIPHER_AES_256;
-		}
-	} else if (strcmp(cipher_name, "aes_xts") == 0) {
-		switch (key_bytes) {
-		case 32:
-			code = RFC2440_CIPHER_AES_XTS_256;
 		}
 	} else {
 		for (i = 0; i < ARRAY_SIZE(ecryptfs_cipher_code_str_map); i++)
@@ -1495,24 +1392,9 @@ int ecryptfs_read_and_validate_header_region(struct inode *inode)
 	u8 file_size[ECRYPTFS_SIZE_AND_MARKER_BYTES];
 	u8 *marker = file_size + ECRYPTFS_FILE_SIZE_BYTES;
 	int rc;
-	unsigned int ra_pages_org;
-	struct file *lower_file = NULL;
-
-	if (!inode)
-		return -EIO;
-	lower_file = ecryptfs_inode_to_private(inode)->lower_file;
-	if (!lower_file)
-		return -EIO;
-
-	/*disable read a head mechanism for a while */
-	ra_pages_org = lower_file->f_ra.ra_pages;
-	lower_file->f_ra.ra_pages = 0;
 
 	rc = ecryptfs_read_lower(file_size, 0, ECRYPTFS_SIZE_AND_MARKER_BYTES,
 				 inode);
-	lower_file->f_ra.ra_pages = ra_pages_org;
-	/* restore read a head mechanism */
-
 	if (rc < ECRYPTFS_SIZE_AND_MARKER_BYTES)
 		return rc >= 0 ? -EINVAL : rc;
 	rc = ecryptfs_validate_marker(marker);
@@ -1911,11 +1793,6 @@ int ecryptfs_read_metadata(struct dentry *ecryptfs_dentry)
 	struct ecryptfs_mount_crypt_stat *mount_crypt_stat =
 		&ecryptfs_superblock_to_private(
 			ecryptfs_dentry->d_sb)->mount_crypt_stat;
-	unsigned int ra_pages_org;
-	struct file *lower_file =
-		ecryptfs_inode_to_private(ecryptfs_inode)->lower_file;
-	if (!lower_file)
-		return -EIO;
 
 	ecryptfs_copy_mount_wide_flags_to_inode_flags(crypt_stat,
 						      mount_crypt_stat);
@@ -1929,14 +1806,9 @@ int ecryptfs_read_metadata(struct dentry *ecryptfs_dentry)
 		       __func__);
 		goto out;
 	}
-	/*disable read a head mechanism */
-	ra_pages_org = lower_file->f_ra.ra_pages;
-	lower_file->f_ra.ra_pages = 0;
 
 	rc = ecryptfs_read_lower(page_virt, 0, crypt_stat->extent_size,
 				 ecryptfs_inode);
-	lower_file->f_ra.ra_pages = ra_pages_org; /* restore it back */
-
 	if (rc >= 0)
 		rc = ecryptfs_read_headers_virt(page_virt, crypt_stat,
 						ecryptfs_dentry,
@@ -2102,9 +1974,6 @@ ecryptfs_process_key_cipher(struct crypto_blkcipher **key_tfm,
 	char dummy_key[ECRYPTFS_MAX_KEY_BYTES];
 	char *full_alg_name = NULL;
 	int rc = 0;
-#ifdef CONFIG_CRYPTO_CCMODE
-	int cc_flag;
-#endif //CONFIG_CRYPTO_CCMODE
 
 	*key_tfm = NULL;
 	if (*key_size > ECRYPTFS_MAX_KEY_BYTES) {
@@ -2116,16 +1985,17 @@ ecryptfs_process_key_cipher(struct crypto_blkcipher **key_tfm,
 		goto out;
 	}
 #ifdef CONFIG_CRYPTO_CCMODE
-	/* Check if cc mode is enabled.*/
-	cc_flag = get_cc_mode_state();
-	if ((cc_flag & FLAG_CC_MODE) == FLAG_CC_MODE) {
+#ifdef CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
 		kfree(full_alg_name);
 		full_alg_name = kmalloc(strlen("cbc(aes)") + 1, GFP_KERNEL);
 		strlcpy(full_alg_name, "cbc(aes)", strlen("cbc(aes)") + 1);
-	} else {
+#else
 		rc = ecryptfs_crypto_api_algify_cipher_name(&full_alg_name, cipher_name,
 						    "ecb");
-	}
+#endif //CONFIG_CRYPTO_DEV_HWCRYPTO_FOR_SDCARD
+#else
+        rc = ecryptfs_crypto_api_algify_cipher_name(&full_alg_name, cipher_name,
+                            "ecb");
 #endif //CONFIG_CRYPTO_CCMODE
 	if (rc)
 		goto out;
@@ -2452,6 +2322,7 @@ ecryptfs_decode_from_filename(unsigned char *dst, size_t *dst_size,
 			break;
 		case 2:
 			dst[dst_byte_offset++] |= (src_byte);
+			dst[dst_byte_offset] = 0;
 			current_bit_offset = 0;
 			break;
 		}

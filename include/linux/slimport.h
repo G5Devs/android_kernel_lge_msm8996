@@ -74,7 +74,9 @@ void sp_set_link_bw(unchar link_bw);
 #ifdef CONFIG_SLIMPORT_DYNAMIC_HPD
 void slimport_set_hdmi_hpd(int on);
 #endif
-
+#ifdef CONFIG_SLIMPORT_HDCP_UEVENT
+void slimport_set_hdcp_done_switch_node(int val);
+#endif
 #ifdef CONFIG_SLIMPORT_COMMON
 bool slimport_is_connected(void);
 bool slimport_is_check(void);

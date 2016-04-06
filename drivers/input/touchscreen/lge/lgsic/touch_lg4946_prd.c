@@ -1139,6 +1139,7 @@ static ssize_t show_sd(struct device *dev, char *buf)
 	int openshort_ret = 0;
 	int rawdata_ret = 0;
 	int ret = 0;
+	char te_log[64] = {0};
 
 	/* file create , time log */
 	write_file(dev, "\nShow_sd Test Start", TIME_INFO_SKIP);
@@ -1163,6 +1164,9 @@ static ssize_t show_sd(struct device *dev, char *buf)
 
 	firmware_version_log(dev);
 	ic_run_info_print(dev);
+
+	if (lg4946_te_info(dev, te_log))
+		write_file(dev, te_log, TIME_INFO_SKIP);
 
 	mutex_lock(&ts->lock);
 	touch_interrupt_control(ts->dev, INTERRUPT_DISABLE);

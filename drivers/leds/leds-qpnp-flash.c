@@ -25,6 +25,7 @@
 #include <linux/workqueue.h>
 #include <linux/power_supply.h>
 #include <linux/qpnp/qpnp-adc.h>
+#include <linux/qpnp/qpnp-revid.h>
 #include "leds.h"
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
@@ -232,6 +233,7 @@ struct qpnp_flash_led_buffer {
  * Flash LED data structure containing flash LED attributes
  */
 struct qpnp_flash_led {
+	struct pmic_revid_data		*revid_data;
 	struct spmi_device		*spmi_dev;
 	struct flash_led_platform_data	*pdata;
 	struct pinctrl			*pinctrl;
@@ -572,6 +574,28 @@ static int64_t qpnp_flash_led_get_die_temp(struct qpnp_flash_led *led)
 	}
 
 	return die_temp_result.physical;
+}
+
+static int qpnp_get_pmic_revid(struct qpnp_flash_led *led)
+{
+	struct device_node *revid_dev_node;
+
+	revid_dev_node = of_parse_phandle(led->spmi_dev->dev.of_node,
+				"qcom,pmic-revid", 0);
+	if (!revid_dev_node) {
+		dev_err(&led->spmi_dev->dev,
+			"qcom,pmic-revid property missing\n");
+		return -EINVAL;
+	}
+
+	led->revid_data = get_revid_data(revid_dev_node);
+	if (IS_ERR(led->revid_data)) {
+		pr_err("Couldn't get revid data rc = %ld\n",
+				PTR_ERR(led->revid_data));
+		return PTR_ERR(led->revid_data);
+	}
+
+	return 0;
 }
 
 static int
@@ -1238,6 +1262,21 @@ static void qpnp_flash_led_work(struct work_struct *work)
 			goto exit_flash_led_work;
 		}
 
+		if (led->battery_psy &&
+			led->revid_data->pmic_subtype == PMI8996_SUBTYPE &&
+						!led->revid_data->rev3) {
+			psy_prop.intval = false;
+			rc = led->battery_psy->set_property(led->battery_psy,
+					POWER_SUPPLY_PROP_FLASH_TRIGGER,
+							&psy_prop);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+				"Failed to enble charger i/p current limit\n");
+				goto exit_flash_led_work;
+				//return -EINVAL;
+			}
+		}
+
 		rc = qpnp_led_masked_write(led->spmi_dev,
 					IN_POLARITY_HIGH(led->base),
 					FLASH_STATUS_REG_MASK, 0x1F);
@@ -1350,6 +1389,18 @@ static void qpnp_flash_led_work(struct work_struct *work)
 			dev_err(&led->spmi_dev->dev,
 				"Module enable reg write failed\n");
 			goto exit_flash_led_work;
+		}
+
+		if (led->revid_data->pmic_subtype == PMI8996_SUBTYPE &&
+						!led->revid_data->rev3) {
+			rc = led->battery_psy->set_property(led->battery_psy,
+						POWER_SUPPLY_PROP_FLASH_TRIGGER,
+							&psy_prop);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+				"Failed to disable charger i/p curr limit\n");
+				goto exit_flash_led_work;
+			}
 		}
 
 		if (led->pdata->hdrm_sns_ch0_en ||
@@ -1465,14 +1516,16 @@ static void qpnp_flash_led_work(struct work_struct *work)
 		if (flash_node->id == FLASH_LED_SWITCH) {
 			if (flash_node->trigger & FLASH_LED0_TRIGGER)
 				total_curr_ma += flash_node->prgm_current;
-			else if (flash_node->trigger & FLASH_LED1_TRIGGER)
+			if (flash_node->trigger & FLASH_LED1_TRIGGER)
 				total_curr_ma += flash_node->prgm_current2;
 
 			if (max_curr_avail_ma < total_curr_ma) {
-				flash_node->prgm_current *=
-					max_curr_avail_ma / total_curr_ma;
-				flash_node->prgm_current2 *=
-					max_curr_avail_ma / total_curr_ma;
+				flash_node->prgm_current =
+					(flash_node->prgm_current *
+					max_curr_avail_ma) / total_curr_ma;
+				flash_node->prgm_current2 =
+					(flash_node->prgm_current2 *
+					max_curr_avail_ma) / total_curr_ma;
 			}
 
 			val = (u8)(flash_node->prgm_current *
@@ -2464,6 +2517,10 @@ static int qpnp_flash_led_probe(struct spmi_device *spmi)
 		dev_err(&spmi->dev, "Failed to initialize flash LED\n");
 		return rc;
 	}
+
+	rc = qpnp_get_pmic_revid(led);
+	if (rc)
+		return rc;
 
 	temp = NULL;
 	while ((temp = of_get_next_child(node, temp)))

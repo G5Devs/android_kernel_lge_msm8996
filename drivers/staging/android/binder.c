@@ -1099,6 +1099,7 @@ static struct binder_ref *binder_get_ref_for_node(struct binder_proc *proc,
 	struct rb_node **p = &proc->refs_by_node.rb_node;
 	struct rb_node *parent = NULL;
 	struct binder_ref *ref, *new_ref;
+	volatile uint32_t tmp_desc;
 
 	while (*p) {
 		parent = *p;
@@ -1129,26 +1130,23 @@ static struct binder_ref *binder_get_ref_for_node(struct binder_proc *proc,
 		new_ref->desc = ref->desc + 1;
 	}
 
-	mb();
+	tmp_desc = new_ref->desc;
 
 	p = &proc->refs_by_desc.rb_node;
 	while (*p) {
 		parent = *p;
 		ref = rb_entry(parent, struct binder_ref, rb_node_desc);
 
-		if (new_ref->desc < ref->desc)
+		if (tmp_desc < ref->desc)
 			p = &(*p)->rb_left;
-		else if (new_ref->desc > ref->desc)
+		else if (tmp_desc > ref->desc)
 			p = &(*p)->rb_right;
 		else {
-			u32 val;
-			asm volatile("isb\n");
-			asm volatile("mrs %0, S3_2_C15_C15_0" : "=r" (val));
-			val |= (0x3 << 11);
-			asm volatile("msr S3_2_C15_C15_0, %0" :: "r" (val));
-			asm volatile("isb\n");
-			asm volatile("mrs %0, S3_2_C15_C15_0" : "=r" (val));
-			BUG();
+			pr_err("binder searching failed, tmp_desc %d new_ref->desc %d ref->desc%d\n",
+				tmp_desc, new_ref->desc, ref->desc);
+			rb_erase(&new_ref->rb_node_node, &proc->refs_by_node);
+			kfree(new_ref);
+			return NULL;
 		}
 	}
 	rb_link_node(&new_ref->rb_node_desc, parent, p);
@@ -1889,6 +1887,11 @@ static int binder_thread_write(struct binder_proc *proc,
 			    (cmd == BC_INCREFS || cmd == BC_ACQUIRE)) {
 				ref = binder_get_ref_for_node(proc,
 					       binder_context_mgr_node);
+				if (ref == NULL) {
+					binder_user_error("%d:%d refcount get for node on invalid ref %d\n",
+						proc->pid, thread->pid, target);
+					break;
+				}
 				if (ref->desc != target) {
 					binder_user_error("%d:%d tried to acquire reference to desc 0, got %d instead\n",
 						proc->pid, thread->pid,

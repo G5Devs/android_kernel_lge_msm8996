@@ -257,3 +257,4 @@ config USB_LINK_LAYER_TEST
 	  Link Layer Test for host controllers.
 
 source "drivers/usb/misc/anx7418/Kconfig"
+source "drivers/usb/misc/alice_friends/Kconfig"

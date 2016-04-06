@@ -10,7 +10,7 @@ qcom,lge_bl42d1f_2800mah_averaged_masterslave_nov30th2015 {
 	qcom,chg-rslow-comp-c2 = <5408826>;
 	qcom,chg-rs-to-rslow = <1211961>;
 	qcom,chg-rslow-comp-thr = <0xAC>;
-	qcom,checksum = <0x943E>;
+	qcom,checksum = <0xAB38>;
 	qcom,gui-version = "PMI8996GUI - 1.1.0.0";
 	qcom,fg-profile-data = [
 		 E5 83 F2 7C
@@ -34,7 +34,7 @@ qcom,lge_bl42d1f_2800mah_averaged_masterslave_nov30th2015 {
 		 3F 21 00 00
 		 00 00 00 00
 		 00 00 00 00
-		 4E 70 C8 6B
+		 B5 6A 0F 6A
 		 16 69 48 88
 		 B0 75 D9 63
 		 22 61 B7 7B

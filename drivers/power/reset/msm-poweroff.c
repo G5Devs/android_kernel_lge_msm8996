@@ -296,8 +296,12 @@ static void msm_restart_prepare(const char *cmd)
 #ifdef CONFIG_LGE_LCD_OFF_DIMMING
 		} else if (!strncmp(cmd, "FOTA LCD off", 12)) {
 			__raw_writel(0x77665560, restart_reason);
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_FOTA_LCD_OFF);
 		} else if (!strncmp(cmd, "FOTA OUT LCD off", 16)) {
 			__raw_writel(0x77665561, restart_reason);
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_FOTA_OUT_LCD_OFF);
 		} else if (!strncmp(cmd, "LCD off", 7)) {
 			__raw_writel(0x77665562, restart_reason);
 #endif
@@ -332,14 +336,8 @@ static void msm_restart_prepare(const char *cmd)
 		lge_set_restart_reason(LAF_DLOAD_MODE);
 	}
 
-	if (in_panic) {
-		extern int gen_key_panic;
-		if (gen_key_panic)
-			lge_set_restart_reason(LGE_RB_MAGIC | LGE_ERR_KERN | LGE_ERR_KEY);
-		else
-			lge_set_panic_reason();
-	}
-
+	if (in_panic)
+		lge_set_panic_reason();
 #endif
 
 	flush_cache_all();

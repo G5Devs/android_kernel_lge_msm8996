@@ -26,8 +26,6 @@
 #define LGE_ERR_LAF               0x0500
 #define LGE_ERR_LK                0x0600
 
-#define LGE_ERR_KEY               0x004B
-
 #define LGE_SUB_ADSP              0x1000
 #define LGE_SUB_MBA               0x2000
 #define LGE_SUB_MODEM             0x3000

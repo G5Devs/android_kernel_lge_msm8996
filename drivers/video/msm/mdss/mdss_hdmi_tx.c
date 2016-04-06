@@ -271,6 +271,8 @@ static const struct hdmi_tx_audio_acr_arry hdmi_tx_audio_acr_lut[] = {
 	{74250, {{4096, 74250}, {6272, 82500}, {6144, 74250}, {12544, 82500},
 		{12288, 74250}, {25088, 82500}, {24576, 74250} } },
 	/* Add LG VR SVD */
+	/*  89MHz  */
+	{89000, {{4096, 89000}, {7056, 1112500}, {6144, 89000} } },
 	/*  93MHz  */
 	{93000, {{4096, 93000}, {4704, 77500}, {6144, 93000} } },
 	/* 148.500MHz */
@@ -1848,6 +1850,10 @@ static int hdmi_tx_read_sink_info(struct hdmi_tx_ctrl *hdmi_ctrl)
 		DEV_ERR("%s: edid parse failed\n", __func__);
 
 error:
+#ifdef CONFIG_SLIMPORT_COMMON
+	if (status)
+		hdmi_edid_reset_parser(hdmi_ctrl->feature_data[HDMI_TX_FEAT_EDID]);
+#endif
 	return status;
 } /* hdmi_tx_read_sink_info */
 
@@ -4228,9 +4234,7 @@ static irqreturn_t hdmi_tx_isr(int irq, void *data)
 		 * waits for hpd interrupt to finish. Suspend thread will
 		 * eventually reset the HPD module.
 		 */
-		if (hdmi_ctrl->panel_suspend)
-			hdmi_ctrl->hpd_state = 0;
-		else
+		if (!hdmi_ctrl->panel_suspend)
 			queue_work(hdmi_ctrl->workq, &hdmi_ctrl->hpd_int_work);
 	}
 
@@ -4418,7 +4422,6 @@ static int hdmi_tx_start_hdcp(struct hdmi_tx_ctrl *hdmi_ctrl)
 	return rc;
 }
 
-#define QCT_SECURE_WATCHDOG_PATCH
 static int hdmi_tx_panel_event_handler(struct mdss_panel_data *panel_data,
 	int event, void *arg)
 {
@@ -4557,14 +4560,13 @@ static int hdmi_tx_panel_event_handler(struct mdss_panel_data *panel_data,
 	case MDSS_EVENT_SUSPEND:
 		mutex_lock(&hdmi_ctrl->power_mutex);
 		if (!hdmi_ctrl->panel_power_on &&
-			!hdmi_ctrl->hpd_off_pending && !hdmi_ctrl->hpd_state) {
+			!hdmi_ctrl->hpd_off_pending) {
 			mutex_unlock(&hdmi_ctrl->power_mutex);
 			if (hdmi_ctrl->hpd_feature_on)
 				hdmi_tx_hpd_off(hdmi_ctrl);
 
 			hdmi_ctrl->panel_suspend = false;
 		} else {
-			hdmi_ctrl->hpd_state = 0;
 			mutex_unlock(&hdmi_ctrl->power_mutex);
 			hdmi_ctrl->hpd_off_pending = true;
 			hdmi_ctrl->panel_suspend = true;

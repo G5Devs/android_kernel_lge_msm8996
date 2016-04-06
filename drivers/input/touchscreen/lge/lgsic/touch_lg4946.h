@@ -97,6 +97,7 @@ struct lg4946_touch_info {
 #define tc_interrupt_status		(0xC02)
 #define tc_drive_ctl			(0xC03)
 
+#define rtc_te_interval_cnt		(0x275)
 #define info_fpc_type			(0x278)
 #define info_wfr_type			(0x27B)
 #define info_chip_revision		(0x27C)
@@ -336,6 +337,7 @@ static inline struct lg4946_data *to_lg4946_data_from_kobj(struct kobject *kobj)
 int lg4946_reg_read(struct device *dev, u16 addr, void *data, int size);
 int lg4946_reg_write(struct device *dev, u16 addr, void *data, int size);
 int lg4946_ic_info(struct device *dev);
+int lg4946_te_info(struct device *dev, char *buf);
 int lg4946_tc_driving(struct device *dev, int mode);
 int lg4946_irq_abs(struct device *dev);
 int lg4946_irq_abs_data(struct device *dev);

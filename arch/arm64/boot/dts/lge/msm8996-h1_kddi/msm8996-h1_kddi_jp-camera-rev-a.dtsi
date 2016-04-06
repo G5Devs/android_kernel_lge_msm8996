@@ -68,7 +68,7 @@
 				config {
 					pins = "gpio83", "gpio84";
 					drive-strength = <2>;
-					bias-pull-up;
+					bias-pull-down;
 				};
 			};
 		};

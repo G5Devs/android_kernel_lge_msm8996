@@ -86,7 +86,7 @@ static int vts_tz_get_temp(struct thermal_zone_device *thermal,
 	VTS *vts = thermal->devdata;
 	struct composite_sensor *sensor;
 	struct value_sensor *vs;
-	*temp = 0;
+	long val = 0;
 
 	if (!vts->vadc_dev)
 		goto value_sensor;
@@ -100,17 +100,18 @@ static int vts_tz_get_temp(struct thermal_zone_device *thermal,
 			pr_err("Fail to get adc(%d)\n", sensor->channel);
 			return ret;
 		}
-		*temp += sensor->weight * results.physical;
+		val += sensor->weight * results.physical;
 	}
 value_sensor:
 	list_for_each_entry(vs, &value_sensors_head, list) {
 		if (vs->vts_index != vts->index)
 			continue;
-		*temp += vs->weight * vts_get_value_sensor_temp(vs);
+		val += vs->weight * vts_get_value_sensor_temp(vs);
 	}
-	*temp += vts->constant;
-	*temp *= (unsigned long)vts->scaling_factor;
-	*temp /= 1000L;
+	val += vts->constant;
+	val *= vts->scaling_factor;
+	val /= 1000L;
+	*temp = (unsigned long)val;
 	return 0;
 }
 

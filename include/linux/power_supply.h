@@ -238,6 +238,9 @@ enum power_supply_property {
 #ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
 	POWER_SUPPLY_PROP_APSD_RERUN_NEED,
 #endif
+#ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
+	POWER_SUPPLY_PROP_USB_NON_DRIVE,
+#endif
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_PROP_CHARGE_COUNTER_EXT,
 	/* Properties of type `const char *' */

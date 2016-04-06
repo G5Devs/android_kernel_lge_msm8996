@@ -357,10 +357,11 @@ int lg4946_ic_info(struct device *dev)
 	u32 revision = 0;
 	u32 bootmode = 0;
 	u32 product[2] = {0};
+	u32 lot = 0;
 	char rev_str[32] = {0};
 	char ver_str[32] = {0};
 
-	lg4946_xfer_msg_ready(dev, 7);
+	lg4946_xfer_msg_ready(dev, 8);
 
 	ts->xfer->data[0].rx.addr = tc_version;
 	ts->xfer->data[0].rx.buf = (u8 *)&version;
@@ -390,6 +391,10 @@ int lg4946_ic_info(struct device *dev)
 	ts->xfer->data[6].rx.buf = (u8 *)&d->ic_info.cg;
 	ts->xfer->data[6].rx.size = sizeof(d->ic_info.cg);
 
+	ts->xfer->data[7].rx.addr = info_lot_num;
+	ts->xfer->data[7].rx.buf = (u8 *)&lot;
+	ts->xfer->data[7].rx.size = sizeof(lot);
+
 	lg4946_xfer_msg(dev, ts->xfer);
 
 	d->ic_info.version.build = ((version >> 12) & 0xF);
@@ -413,17 +418,56 @@ int lg4946_ic_info(struct device *dev)
 
 	TOUCH_I("version : %s, chip : %d, protocol : %d\n" \
 		"[Touch] %s\n" \
-		"[Touch] fpc : %d, cg : %d, wfr : %d\n" \
+		"[Touch] fpc : %d, cg : %d, wfr : %d, lot : %d\n" \
 		"[Touch] product id : %s\n" \
 		"[Touch] flash boot : %s, %s, crc : %s\n",
 		ver_str, (version >> 16) & 0xFF, (version >> 24) & 0xFF,
-		rev_str, d->ic_info.fpc, d->ic_info.cg, d->ic_info.wfr, d->ic_info.product_id,
+		rev_str, d->ic_info.fpc, d->ic_info.cg, d->ic_info.wfr, lot,
+		d->ic_info.product_id,
 		(bootmode >> 1 & 0x1) ? "BUSY" : "idle",
 		(bootmode >> 2 & 0x1) ? "done" : "BOOTING",
 		(bootmode >> 3 & 0x1) ? "ERROR" : "ok");
 	if ((((version >> 16) & 0xFF) != 7) || (((version >> 24) & 0xFF) != 4)) {
 		TOUCH_I("FW is in abnormal state because of ESD or something.\n");
 		ret = -EAGAIN;
+	}
+
+	return ret;
+}
+
+int lg4946_te_info(struct device *dev, char *buf)
+{
+	struct lg4946_data *d = to_lg4946_data(dev);
+	u32 count = 0;
+	u32 ms = 0;
+	u32 hz = 0;
+	int ret = 0;
+	char te_log[64] ={0};
+
+	if (buf == NULL)
+		buf = te_log;
+
+	if (d->ic_info.revision != 2) {
+		ret = snprintf(buf + ret, 63, "not support in rev %d\n", d->ic_info.revision);
+		return ret;
+	}
+
+	if (d->lcd_mode != LCD_MODE_U3) {
+		ret = snprintf(buf + ret, 63, "not support on u%d\n", d->lcd_mode);
+		return ret;
+	}
+
+	lg4946_reg_read(dev, rtc_te_interval_cnt, (u8 *)&count, sizeof(u32));
+
+	if (count > 100 && count < 10000) {
+		ms = (count * 100 * 1000) / 32764;
+		hz = (32764 * 100) / count;
+
+		ret = snprintf(buf + ret, 63,
+			"%s : %d, %d.%02d ms, %d.%02d hz\n", __func__, count,
+			ms / 100, ms % 100, hz / 100, hz % 100);
+
+		TOUCH_I("%s", buf);
 	}
 
 	return ret;
@@ -1100,7 +1144,7 @@ static int lg4946_lpwg(struct device *dev, u32 code, void *param)
 		break;
 
 	case LPWG_UPDATE_ALL:
-		if ( (ts->lpwg.screen == 1 && value[1] == 0) ||
+		if ( (ts->lpwg.screen == 1 && value[1] == 0 && ts->lpwg.sensor == PROX_FAR) ||
 			(ts->lpwg.qcover == 1 && value[3] == 0) )
 			lg4946_clear_q_sensitivity(dev);
 
@@ -1193,11 +1237,11 @@ static int lg4946_check_mode(struct device *dev)
 		if (d->lcd_mode == LCD_MODE_U2) {
 			if (d->prev_lcd_mode == LCD_MODE_U2_UNBLANK) {
 				TOUCH_I("U1 -> U2\n");
-				lg4946_watch_init(dev);
 				ret = 1;
 			} else {
 				TOUCH_I("U2 mode change\n");
 			}
+			lg4946_watch_init(dev);
 		} else if (d->lcd_mode == LCD_MODE_U2_UNBLANK) {
 			switch (d->prev_lcd_mode) {
 			case LCD_MODE_U2:
@@ -1206,12 +1250,12 @@ static int lg4946_check_mode(struct device *dev)
 				break;
 			case LCD_MODE_U0:
 				TOUCH_I("U0 -> U1 mode change\n");
-				lg4946_watch_init(dev);
 				break;
 			default:
 				TOUCH_I("%s - Not Defined Mode\n", __func__);
 				break;
 			}
+			lg4946_watch_display_off(dev);
 		} else if (d->lcd_mode == LCD_MODE_U0) {
 			TOUCH_I("U0 mode change\n");
 		} else {
@@ -1522,7 +1566,6 @@ static int lg4946_probe(struct device *dev)
 	d->lcd_mode = LCD_MODE_U3;
 	d->tci_debug_type = 1;
 	lg4946_sic_abt_probe();
-	atomic_set(&ts->state.debug_option_mask, DEBUG_OPTION_2);
 
 	lg4946_asc_init(dev);	/* ASC */
 
@@ -1836,6 +1879,7 @@ static int lg4946_init(struct device *dev)
 {
 	struct touch_core_data *ts = to_touch_core(dev);
 	struct lg4946_data *d = to_lg4946_data(dev);
+	u32 rtc_run = EXT_WATCH_RTC_START;
 	u32 data = 1;
 	int ret = 0;
 
@@ -1882,6 +1926,9 @@ static int lg4946_init(struct device *dev)
 	if (ret)
 		TOUCH_E("failed to write \'QCOVER_SENSITIVITY\', ret:%d\n", ret);
 
+	if (atomic_read(&d->watch.state.rtc_status) == RTC_CLEAR)
+		lg4946_reg_write(dev, EXT_WATCH_RTC_RUN, (u8 *)&rtc_run, sizeof(u32));
+
 	atomic_set(&d->init, IC_INIT_DONE);
 	atomic_set(&ts->state.sleep, IC_NORMAL);
 
@@ -1908,6 +1955,8 @@ static int lg4946_init(struct device *dev)
 					atomic_read(&ts->state.onhand));
 		}
 	}
+
+	lg4946_te_info(dev, NULL);
 
 	return 0;
 }
@@ -1997,11 +2046,16 @@ int lg4946_check_status(struct device *dev)
 			TOUCH_E("%s, status = %x, ic_status = %x\n",
 					checking_log, status, ic_status);
 		}
+
+		lg4946_te_info(dev, NULL);
 	}
 
 	if ((ic_status & 1) || (ic_status & (1 << 3))) {
 		TOUCH_I("%s : Watchdog Exception - status : %x, ic_status : %x\n",
 			__func__, status, ic_status);
+
+		lg4946_te_info(dev, NULL);
+
 		ret = -ERESTART;
 	}
 
@@ -2073,8 +2127,9 @@ int lg4946_debug_info(struct device *dev, int mode)
 	if (mode) {
 		u8 debug_data[264];
 
-		if ((debug_change_mask && press_mask) || (ts->tcount > 0)) {
-			TOUCH_I("int occured on wq running\n");
+		if (ts->tcount > 0) {
+			if (debug_change_mask && press_mask)
+				TOUCH_I("int occured on wq running\n");
 			return 1;
 
 		} else {
@@ -2085,7 +2140,8 @@ int lg4946_debug_info(struct device *dev, int mode)
 				memcpy(&d->info.debug, &debug_data[132], sizeof(d->info.debug));
 			}
 
-			if (debug->frame_cnt - d->frame_cnt > DEBUG_FRAME_CNT) {
+			if ((debug->frame_cnt - d->frame_cnt > DEBUG_FRAME_CNT) ||
+					(atomic_read(&ts->state.fb) == FB_SUSPEND)){
 				TOUCH_I("frame cnt over\n");
 				return -1;
 			}
@@ -2519,11 +2575,17 @@ static ssize_t store_q_sensitivity(struct device *dev, const char *buf, size_t c
 	return count;
 }
 
+static ssize_t show_te(struct device *dev, char *buf)
+{
+	return lg4946_te_info(dev, buf);
+}
+
 static TOUCH_ATTR(reg_ctrl, NULL, store_reg_ctrl);
 static TOUCH_ATTR(tci_debug, show_tci_debug, store_tci_debug);
 static TOUCH_ATTR(swipe_debug, show_swipe_debug, store_swipe_debug);
 static TOUCH_ATTR(reset_ctrl, NULL, store_reset_ctrl);
 static TOUCH_ATTR(q_sensitivity, NULL, store_q_sensitivity);
+static TOUCH_ATTR(te, show_te, NULL);
 
 static struct attribute *lg4946_attribute_list[] = {
 	&touch_attr_reg_ctrl.attr,
@@ -2531,6 +2593,7 @@ static struct attribute *lg4946_attribute_list[] = {
 	&touch_attr_swipe_debug.attr,
 	&touch_attr_reset_ctrl.attr,
 	&touch_attr_q_sensitivity.attr,
+	&touch_attr_te.attr,
 	NULL,
 };
 
@@ -2619,8 +2682,13 @@ static int lg4946_get_cmd_atcmd_version(struct device *dev, char *buf)
 		return offset;
 	}
 
-	offset = snprintf(buf, PAGE_SIZE, "v%d.%02d\n",
-		d->ic_info.version.major, d->ic_info.version.minor);
+	if (d->ic_info.version.build) {
+		offset = snprintf(buf, PAGE_SIZE, "v%d.%02d.%d\n",
+			d->ic_info.version.major, d->ic_info.version.minor, d->ic_info.version.build);
+	} else {
+		offset = snprintf(buf, PAGE_SIZE, "v%d.%02d\n",
+			d->ic_info.version.major, d->ic_info.version.minor);
+	}
 
 	return offset;
 }
@@ -2683,7 +2751,7 @@ static struct touch_hwif hwif = {
 	.of_match_table = of_match_ptr(touch_match_ids),
 	.bits_per_word = 8,
 	.spi_mode = SPI_MODE_0,
-	.max_freq = (40 * 1000000),
+	.max_freq = (15 * 1000000),
 };
 
 static int __init touch_device_init(void)

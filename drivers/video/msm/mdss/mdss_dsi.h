@@ -473,6 +473,7 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_panel_cmds ie_off_cmds;
 	struct dsi_panel_cmds cabc_20_cmds;
 	struct dsi_panel_cmds cabc_30_cmds;
+	int ie_on;
 #endif
 	struct dsi_panel_cmds post_dms_on_cmds;
 	struct dsi_panel_cmds post_panel_on_cmds;

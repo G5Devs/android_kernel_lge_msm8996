@@ -26,8 +26,8 @@
 
 &mdss_dsi0 {
 	pinctrl-names = "mdss_default", "mdss_sleep";
-	pinctrl-0 = <&mdss_dsi_active &mdss_dsi_active1 &mdss_dsi_active2 &mdss_te_active>;
-	pinctrl-1 = <&mdss_dsi_suspend &mdss_dsi_suspend1 &mdss_dsi_suspend2 &mdss_te_suspend>;
+	pinctrl-0 = <&mdss_dsi_active &mdss_dsi_active1 &mdss_dsi_active2 &mdss_dsi_active3 &mdss_te_active>;
+	pinctrl-1 = <&mdss_dsi_suspend &mdss_dsi_suspend1 &mdss_dsi_suspend2 &mdss_dsi_suspend3 &mdss_te_suspend>;
 	qcom,dsi-panel-bias-vreg;
 	qcom,platform-te-gpio = <&tlmm 10 0>;
 	qcom,platform-reset-gpio = <&tlmm 8 0>;

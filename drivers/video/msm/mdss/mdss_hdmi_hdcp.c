@@ -245,6 +245,7 @@ static int hdcp_scm_call(struct scm_hdcp_req *req, u32 *resp)
 	return ret;
 }
 
+#define LGE_HDCP_AHB_TIMEOUT
 static int hdmi_hdcp_authentication_part1(struct hdmi_hdcp_ctrl *hdcp_ctrl)
 {
 	int rc;
@@ -506,7 +507,9 @@ static int hdmi_hdcp_authentication_part1(struct hdmi_hdcp_ctrl *hdcp_ctrl)
 		msleep(200);
 		stale_an = false;
 	}
-
+#ifdef LGE_HDCP_AHB_TIMEOUT
+	msleep(200);
+#endif
 	/* Read An0 and An1 */
 	link0_an_0 = DSS_REG_R(io, HDMI_HDCP_RCVPORT_DATA5);
 	link0_an_1 = DSS_REG_R(io, HDMI_HDCP_RCVPORT_DATA6);

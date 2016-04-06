@@ -7,7 +7,7 @@
 #include "anx7418_pd.h"
 #include "anx7418_charger.h"
 
-pdo_t pwr_snk_cap[] = {
+static pdo_t pwr_snk_cap[] = {
 	[0].fixed = {
 		.curr = PD_CURR(3000),
 		.volt = PD_VOLT(5000),
@@ -25,9 +25,8 @@ pdo_t pwr_snk_cap[] = {
 		.type = PDO_TYPE_FIXED,
 	}
 };
-EXPORT_SYMBOL(pwr_snk_cap);
 
-pdo_t pwr_src_cap[] = {
+static pdo_t pwr_src_cap[] = {
 	[0].fixed = {
 		.curr = PD_CURR(1000),
 		.volt = PD_VOLT(5000),
@@ -37,7 +36,6 @@ pdo_t pwr_src_cap[] = {
 		.type = PDO_TYPE_FIXED,
 	},
 };
-EXPORT_SYMBOL(pwr_src_cap);
 
 static u8 dp_snk_identity[] = {
 	0x00, 0x00, 0x00, 0xEC, /*snk_id_hdr */
@@ -45,6 +43,8 @@ static u8 dp_snk_identity[] = {
 	0x00, 0x00, 0x00, 0x00, /*snk_prd*/
 	0x39, 0x00, 0x00, 0x51  /*5snk_ama*/
 };
+
+static u8 svid[] = {0x00, 0x00, 0x01, 0xFF};
 
 static const char *pd_type_string(pd_type type)
 {
@@ -733,7 +733,13 @@ int anx7418_pd_init(struct anx7418 *anx)
 		return -1;
 
 	rc = anx7418_send_pd_msg(client, PD_TYPE_DP_SNK_IDENTITY,
-			(u8 *)dp_snk_identity, sizeof(dp_snk_identity),
+			dp_snk_identity, sizeof(dp_snk_identity),
+			PD_SEND_TIMEOUT);
+	if (rc < 0)
+		return -1;
+
+	rc = anx7418_send_pd_msg(client, PD_TYPE_SVID,
+			svid, sizeof(svid),
 			PD_SEND_TIMEOUT);
 	if (rc < 0)
 		return -1;

@@ -178,9 +178,14 @@ static int sdcardfs_cmp_ci(const struct dentry *parent,
 	return 1;
 }
 
+static int sdcardfs_d_delete(const struct dentry *dent) {
+		return 1;
+}
+
 const struct dentry_operations sdcardfs_ci_dops = {
 	.d_revalidate	= sdcardfs_d_revalidate,
 	.d_release	= sdcardfs_d_release,
 	.d_hash		= sdcardfs_hash_ci,
 	.d_compare	= sdcardfs_cmp_ci,
+	.d_delete	= sdcardfs_d_delete,
 };

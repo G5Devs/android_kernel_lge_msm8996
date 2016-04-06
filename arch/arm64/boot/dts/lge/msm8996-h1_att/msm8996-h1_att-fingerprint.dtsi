@@ -12,10 +12,3 @@
 
 #include "../msm8996-fingerprint-fpc1022.dtsi"
 
-&soc {
-	fpc,btp {
-		status = "ok";
-		use_regulator = <0>;
-		fpc,ldo_en = <&pm8994_gpios 6 0x0>;
-	};
-};

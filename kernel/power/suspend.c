@@ -464,9 +464,18 @@ static int enter_state(suspend_state_t state)
 		freeze_begin();
 
 	trace_suspend_resume(TPS("sync_filesystems"), 0, true);
+#ifdef CONFIG_MACH_LGE
+	printk(KERN_INFO "PM: Check and Syncing filesystems ... \n");
+	if (check_and_sync() != 0) {
+		error = -EBUSY;
+		goto Unlock;
+	}
+	printk("PM: done.\n");
+#else
 	printk(KERN_INFO "PM: Syncing filesystems ... ");
 	sys_sync();
 	printk("done.\n");
+#endif
 	trace_suspend_resume(TPS("sync_filesystems"), 0, false);
 
 	pr_debug("PM: Preparing system for %s sleep\n", pm_states[state]);

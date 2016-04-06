@@ -476,6 +476,8 @@ void lg4946_watch_display_off(struct device *dev)
 	u32 disp = 0;
 
 	lg4946_reg_write(dev, EXT_WATCH_DISPLAY_ON, &disp, sizeof(u32));
+
+	TOUCH_I("%s\n", __func__);
 }
 
 u16 lg4946_crc16wordcalc(const u16 *data, u32 datalen, u16 initval)
@@ -628,8 +630,6 @@ int lg4946_check_font_status(struct device *dev)
 	struct lg4946_data *d = to_lg4946_data(dev);
 	int ret = 0;
 	int status = 1;
-
-	lg4946_watch_init(dev);
 
 	if (touch_boot_mode_check(dev) >= MINIOS_MFTS_FOLDER)
 		return -EBUSY;
@@ -808,17 +808,24 @@ static ssize_t store_extwatch_fontonoff
 	else
 		value = 0x01;
 
+	d->watch.ext_wdata.time.disp_waton = value;
+
+	if (d->lcd_mode == LCD_MODE_U2_UNBLANK && value) {
+		TOUCH_I("%s : Ignore HW Clock On in U2 Unblank\n", __func__);
+		goto Exit;
+	}
+
 	TOUCH_I("%s %d\n", __func__, value);
 
 	ret = ext_watch_set_cfg(dev, 1);
 	if (ret)
 		TOUCH_I("%s fail %d\n", __func__, ret);
 
-	d->watch.ext_wdata.time.disp_waton = value;
 	ret = ext_watch_display_onoff(dev, 1);
 	if (ret)
 		TOUCH_I("%s fail %d\n", __func__, ret);
 
+Exit :
 	mutex_unlock(&ts->lock);
 
 	return count;

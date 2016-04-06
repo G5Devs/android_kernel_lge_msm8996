@@ -31,7 +31,8 @@ DEFINE_MSM_MUTEX(msm_tcs_mutex);
 extern int32_t tcs3490_device_Scan_All_Data(struct msm_tcs_ctrl_t* state);
 extern int32_t tcs3490_Read_all(struct msm_tcs_ctrl_t* state);
 extern int32_t tcs3490_Read_BINs(struct msm_tcs_ctrl_t* state);
-static int tcs_dup_init = 0;
+static bool tcs_init_flag = FALSE;
+static bool tcs_dup_init = FALSE;
 
 static struct msm_tcs_ctrl_t msm_tcs_t;
 
@@ -91,31 +92,26 @@ static int msm_tcs_close(struct v4l2_subdev *sd,  struct v4l2_subdev_fh *fh) {
 	CDBG("Enter\n");
 	if (!o_ctrl) {
 		pr_err("failed\n");
-		tcs_dup_init--;
 		return -EINVAL;
 	}
 	if (o_ctrl->tcs_device_type == MSM_CAMERA_PLATFORM_DEVICE) {
-		if (tcs_dup_init < 1) {
-			pr_err("TCS already closed. tcs_dup_init : %d\n", tcs_dup_init);
-			if (tcs_dup_init < 0) {
-				pr_err("[ERROR] tcs_dup_init is under 0\n");
-				tcs_dup_init = 0;
-				}
+		if (tcs_dup_init == TRUE) {
+			if (tcs_init_flag == FALSE) {
+				pr_err("[ERROR] TCS dup_init = TRUE, init_flag = FALSE\n");
+			}
+			pr_err("IMX234 or IMX268 is closed, but TCS is alive.\n");
+			tcs_dup_init = FALSE;
 		}
-		else if (tcs_dup_init == 1) {
+		else {
+			if (tcs_init_flag == FALSE) {
+				pr_err("[ERROR] TCS is already closed.\n");
+			}
 	 		rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_util(
 	 			&o_ctrl->i2c_client, MSM_CCI_RELEASE);
 	 		if (rc < 0) {
 	 			pr_err("cci_init failed\n");
 	 		}
-			tcs_dup_init--;
-		}
-		else if (tcs_dup_init == 2) {
-			pr_err("IMX234 or IMX268 is closed, but TCS is not closed. %d\n", tcs_dup_init);
-			tcs_dup_init--;
-		}
-		else {
-			pr_err("[ERROR] tcs_dup_init is over 2\n");
+			tcs_init_flag = FALSE;
 		}
 	}
 
@@ -500,15 +496,20 @@ static int msm_tcs_init(struct msm_tcs_ctrl_t *o_ctrl)
 		pr_err("failed\n");
 		return -EINVAL;
 	}
-	if(tcs_dup_init > 0) {
+	if(tcs_init_flag == TRUE) {
 		rc = 0;
-		pr_err("%s: tcs is already on! skip tcs_init. tcs_dup_init : %d\n", __func__, tcs_dup_init);
-		tcs_dup_init++;
-		if (tcs_dup_init > 2) {
-			pr_err("[ERROR] tcs_dup_init is over 2\n");
+		if(tcs_dup_init == TRUE) {
+			pr_err("[ERROR] TCS is already on.\n");
+		}
+		else {
+			pr_err("TCS is already on! skip tcs_init.\n");
+			tcs_dup_init = TRUE;
 		}
 	}
 	else {
+		if(tcs_dup_init == TRUE) {
+			pr_err("[ERROR] TCS dup_init is on, but init is not yet.\n");
+		}
 		if (o_ctrl->tcs_device_type == MSM_CAMERA_PLATFORM_DEVICE) {
 			rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_util(
 				&o_ctrl->i2c_client, MSM_CCI_INIT);
@@ -516,18 +517,13 @@ static int msm_tcs_init(struct msm_tcs_ctrl_t *o_ctrl)
 				pr_err("cci_init failed\n");
 		}
 
-		if (tcs_dup_init < 0) {
-			pr_err("[ERROR] tcs_dup_init is under 0\n");
-			tcs_dup_init = 0;
-		}
-		tcs_dup_init++;
+		tcs_init_flag = TRUE;
 	}
 	rc = tcs_i2c_read(0x92, &read_val, 1);
 	if(rc < 0 )
 	{
 		pr_err("TCS read chip ID fail\n");
 		msm_tcs_t.tcs_error = TCS_ERR_I2C;
-		tcs_dup_init--;
 		return 	rc;
 	}
 

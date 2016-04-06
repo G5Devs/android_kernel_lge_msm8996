@@ -38,6 +38,9 @@
 #ifdef CONFIG_LGE_USB_FACTORY
 #include <linux/platform_data/lge_android_usb.h>
 #include <soc/qcom/lge/board_lge.h>
+#include <linux/reboot.h>
+#include <soc/qcom/restart.h>
+#include <soc/qcom/lge/lge_cable_detection.h>
 #endif
 
 #include "u_fs.h"
@@ -332,6 +335,9 @@ enum android_device_state {
 	USB_RESUMED
 };
 
+#ifdef CONFIG_MACH_MSM8996_H1
+static int firstboot_check = 1;
+#endif
 static const char *pm_qos_to_string(enum android_pm_qos_state state)
 {
 	switch (state) {
@@ -517,6 +523,42 @@ static void android_work(struct work_struct *data)
 		pr_info("%s: did not send uevent (%d %d %p)\n", __func__,
 			 dev->connected, dev->sw_connected, cdev->config);
 	}
+
+#ifdef CONFIG_MACH_MSM8996_H1
+	/*
+	* H1 models  : Although external battery type, request for factory process
+	* This reset scenario for 56K cable is from factory's request and
+	* apply to the only embedded type models or H1 models
+	*/
+	if (uevent_envp == connected) {
+		if (lge_pm_get_cable_type() == CABLE_56K &&
+			lge_get_boot_mode() == LGE_BOOT_MODE_NORMAL) {
+			usb_gadget_disconnect(cdev->gadget);
+			usb_ep_dequeue(cdev->gadget->ep0, cdev->req);
+			pr_info("[FACTORY] PIF_56K detected in NORMAL BOOT, reboot!!\n");
+			msleep(50); /*wait for usb gadget disconnect*/
+			kernel_restart(NULL);
+		} else if (lge_pm_get_cable_type() == CABLE_910K &&
+				(lge_smem_cable_type() != 11 || !firstboot_check) &&
+				!lge_get_laf_mode()) {
+			usb_gadget_disconnect(cdev->gadget);
+			usb_ep_dequeue(cdev->gadget->ep0, cdev->req);
+			pr_info("[FACTORY] reset due to 910K cable, pm:%d, xbl:%d, firstboot_check:%d\n",
+				lge_pm_get_cable_type(), lge_smem_cable_type(), firstboot_check);
+			msleep(50); /*wait for usb gadget disconnect*/
+
+			/*write magic number for laf mode*/
+			msm_set_restart_mode(RESTART_DLOAD);
+			kernel_restart(NULL);
+		}
+	}
+
+	if (uevent_envp == configured) {
+		pr_info("[cable info] boot_mode:%d, dlcomplete:%d\n",
+					lge_get_boot_mode(), lge_get_android_dlcomplete());
+		firstboot_check = 0;
+	}
+#endif
 }
 
 #define MIN_DISCONNECT_DELAY_MS	30
