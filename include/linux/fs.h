@@ -124,18 +124,6 @@ typedef void (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 /* File is opened with O_PATH; almost nothing can be done with it */
 #define FMODE_PATH		((__force fmode_t)0x4000)
 
-#ifdef CONFIG_SDCARD_FS
-/* File hasn't page cache and can't be mmaped, for stakable filesystem */
-#define FMODE_NOMAPPABLE	((__force fmode_t)0x8000)
-/* File needs atomic accesses to f_pos */
-#define FMODE_ATOMIC_POS	((__force fmode_t)0x10000)
-/* Write access to underlying fs */
-#define FMODE_WRITER		((__force fmode_t)0x20000)
-/* Has read method(s) */
-#define FMODE_CAN_READ          ((__force fmode_t)0x40000)
-/* Has write method(s) */
-#define FMODE_CAN_WRITE         ((__force fmode_t)0x80000)
-#else
 /* File needs atomic accesses to f_pos */
 #define FMODE_ATOMIC_POS	((__force fmode_t)0x8000)
 /* Write access to underlying fs */
@@ -144,7 +132,6 @@ typedef void (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 #define FMODE_CAN_READ          ((__force fmode_t)0x20000)
 /* Has write method(s) */
 #define FMODE_CAN_WRITE         ((__force fmode_t)0x40000)
-#endif
 
 /* File was opened by fanotify and shouldn't generate fanotify events */
 #define FMODE_NONOTIFY		((__force fmode_t)0x1000000)
@@ -1440,9 +1427,6 @@ extern int vfs_rmdir(struct inode *, struct dentry *);
 extern int vfs_unlink(struct inode *, struct dentry *, struct inode **);
 extern int vfs_rename(struct inode *, struct dentry *, struct inode *, struct dentry *, struct inode **, unsigned int);
 extern int vfs_whiteout(struct inode *, struct dentry *);
-#ifdef CONFIG_SDCARD_FS
-extern long do_unlinkat(int, const char __user *, bool);
-#endif
 
 /*
  * VFS dentry helper functions.
@@ -1537,10 +1521,6 @@ struct file_operations {
 	long (*fallocate)(struct file *file, int mode, loff_t offset,
 			  loff_t len);
 	int (*show_fdinfo)(struct seq_file *m, struct file *f);
-#ifdef CONFIG_SDCARD_FS
-	/* get_lower_file is for stakable file system */
-	struct file* (*get_lower_file)(struct file *f);
-#endif
 };
 
 struct inode_operations {
@@ -1580,9 +1560,6 @@ struct inode_operations {
 
 	/* WARNING: probably going away soon, do not use! */
 	int (*dentry_open)(struct dentry *, struct file *, const struct cred *);
-#ifdef CONFIG_SDCARD_FS
-	struct inode * (*get_lower_inode)(struct inode *);
-#endif
 } ____cacheline_aligned;
 
 ssize_t rw_copy_check_uvector(int type, const struct iovec __user * uvector,
@@ -1624,9 +1601,6 @@ struct super_operations {
 	int (*bdev_try_to_free_page)(struct super_block*, struct page*, gfp_t);
 	long (*nr_cached_objects)(struct super_block *, int);
 	long (*free_cached_objects)(struct super_block *, long, int);
-#ifdef CONFIG_SDCARD_FS
-	long (*unlink_callback)(struct inode *, char *);
-#endif
 };
 
 /*
