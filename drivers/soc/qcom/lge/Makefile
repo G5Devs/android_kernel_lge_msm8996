@@ -1,3 +1,4 @@
+obj-$(CONFIG_MACH_LGE) += devices_lge.o
 obj-$(CONFIG_LGE_PM) += lge_monitor_thermal.o
 obj-$(CONFIG_LGE_PM_CABLE_DETECTION) += lge_cable_detection.o
 obj-$(CONFIG_LGE_PM_SMPL_COUNTER) += lge_smpl_count.o
