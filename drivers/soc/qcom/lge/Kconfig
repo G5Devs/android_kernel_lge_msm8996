@@ -1,0 +1,4 @@
+config MACH_LGE
+	bool "Machine LGE"
+	help
+	  Support for machine LGE.
