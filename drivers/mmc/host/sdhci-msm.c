@@ -31,6 +31,9 @@
 #include <linux/delay.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
+#ifdef CONFIG_MACH_LGE
+#include "../core/mmc_ops.h"
+#endif
 #include <linux/mmc/slot-gpio.h>
 #include <linux/dma-mapping.h>
 #include <linux/iopoll.h>
@@ -1034,7 +1037,11 @@ retry:
 			sts_cmd.opcode = MMC_SEND_STATUS;
 			sts_cmd.arg = card->rca << 16;
 			sts_cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+		#ifdef CONFIG_MACH_LGE
+			sts_retry = 100;
+		#else
 			sts_retry = 5;
+		#endif
 			while (sts_retry) {
 				mmc_wait_for_cmd(mmc, &sts_cmd, 0);
 
@@ -2986,7 +2993,11 @@ void sdhci_msm_dump_vendor_regs(struct sdhci_host *host)
 	u32 sts = 0;
 
 	pr_info("----------- VENDOR REGISTER DUMP -----------\n");
+#if defined(CONFIG_MACH_LGE)
+	if(mmc_card_mmc((msm_host->mmc->card)))
+#else
 	if (host->cq_host)
+#endif
 		sdhci_msm_cmdq_dump_debug_ram(msm_host);
 
 	pr_info("Data cnt: 0x%08x | Fifo cnt: 0x%08x | Int sts: 0x%08x\n",
