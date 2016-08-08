@@ -27,6 +27,10 @@
 #include "msm-dts-srs-tm-config.h"
 #include <sound/adsp_err.h>
 
+#ifdef CONFIG_MACH_LGE
+#define AUDIO_RX_LGE        (0x10010712)
+#endif
+
 #define TIMEOUT_MS 1000
 
 #define RESET_COPP_ID 99
@@ -2250,6 +2254,14 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		pr_debug("%s: Force open adm in 24-bit for DTS HPX topology 0x%x\n",
 			__func__, topology);
 	}
+
+	/* For AUDIO_RX_LGE topology only, force 24 bit */
+#ifdef CONFIG_MACH_LGE
+	if(topology == AUDIO_RX_LGE) {
+		bit_width = 24;
+	}
+#endif
+
 	port_id = q6audio_convert_virtual_to_portid(port_id);
 	port_idx = adm_validate_and_get_port_index(port_id);
 	if (port_idx < 0) {
