@@ -1094,6 +1094,19 @@ static int flash_regulator_setup(struct qpnp_flash_led *led,
 
 error_regulator_setup:
 	while (i--) {
+#ifdef CONFIG_MACH_LGE
+		if (IS_ERR_OR_NULL(flash_node->reg_data[i].regs)) {
+			flash_node->reg_data[i].regs =
+				regulator_get(flash_node->cdev.dev,
+						flash_node->reg_data[i].reg_name);
+			if (IS_ERR_OR_NULL(flash_node->reg_data[i].regs)) {
+				rc = PTR_ERR(flash_node->reg_data[i].regs);
+				dev_err(&led->spmi_dev->dev,
+						"Failed to get regulator %d\n", i);
+				continue;
+			}
+		}
+#endif
 		if (regulator_count_voltages(flash_node->reg_data[i].regs)
 									> 0) {
 			regulator_set_voltage(flash_node->reg_data[i].regs,
@@ -1159,7 +1172,12 @@ static void qpnp_flash_led_work(struct work_struct *work)
 	}
 
 	if (!flash_node->flash_on && flash_node->num_regulators > 0) {
+#ifdef CONFIG_MACH_LGE
+		rc = flash_regulator_setup(led, flash_node, true);
+		rc |= flash_regulator_enable(led, flash_node, true);
+#else
 		rc = flash_regulator_enable(led, flash_node, true);
+#endif
 		if (rc) {
 			mutex_unlock(&led->flash_led_lock);
 			return;
@@ -1672,8 +1690,15 @@ exit_flash_led_work:
 		goto exit_flash_led_work;
 	}
 error_enable_gpio:
+#ifdef CONFIG_MACH_LGE
+	if (flash_node->flash_on && flash_node->num_regulators > 0) {
+		flash_regulator_enable(led, flash_node, false);
+		flash_regulator_setup(led, flash_node,false);
+	}
+#else
 	if (flash_node->flash_on && flash_node->num_regulators > 0)
 		flash_regulator_enable(led, flash_node, false);
+#endif
 
 	flash_node->flash_on = false;
 	mutex_unlock(&led->flash_led_lock);
@@ -2465,8 +2490,13 @@ static int qpnp_flash_led_probe(struct spmi_device *spmi)
 				goto error_led_register;
 			}
 
+#ifdef CONFIG_MACH_LGE
+			rc = flash_regulator_setup(led, &led->flash_node[i],
+									false);
+#else
 			rc = flash_regulator_setup(led, &led->flash_node[i],
 									true);
+#endif
 			if (rc) {
 				dev_err(&led->spmi_dev->dev,
 					"Unable to set up regulator\n");
