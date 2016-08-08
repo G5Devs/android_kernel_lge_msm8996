@@ -247,6 +247,10 @@ static struct usb_ext_notification *usb_ext;
 static void dwc3_pwr_event_handler(struct dwc3_msm *mdwc);
 static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned mA);
 
+#if defined (CONFIG_LGE_TOUCH_CORE)
+void touch_notify_connect(int value);
+#endif
+
 /**
  *
  * Read register with debug info.
@@ -2734,6 +2738,10 @@ skip_psy_type:
 	if (mdwc->chg_type == DWC3_CDP_CHARGER)
 		mA = DWC3_IDEV_CHG_MAX;
 
+#if defined (CONFIG_LGE_TOUCH_CORE)
+	touch_notify_connect(mdwc->chg_type);
+#endif
+
 	if (mdwc->max_power == mA)
 		return 0;
 
@@ -3069,6 +3077,9 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 				delay = VBUS_REG_CHECK_DELAY;
 				work = 1;
 			}
+#if defined (CONFIG_LGE_TOUCH_CORE)
+			touch_notify_connect(6);
+#endif
 		}
 		break;
 
