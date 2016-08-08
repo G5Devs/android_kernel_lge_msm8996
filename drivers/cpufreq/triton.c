@@ -304,7 +304,9 @@ static void frequency_process(struct work_struct *work)
 	int dst_cpu = -1, cl = -1;
 	int f = 0;
 	int ccm = 0;
-
+#ifdef CONFIG_LGE_PM_CANCUN
+	ccm = get_cancun_status();
+#endif
 	if(!conf)
 		return;
 

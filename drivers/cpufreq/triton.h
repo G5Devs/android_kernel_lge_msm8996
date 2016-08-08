@@ -87,4 +87,7 @@ void stack(int cpu, int freq);
 void update_cpu_load(int cpu);
 unsigned int cpufreq_restore_freq(unsigned long data);
 extern int get_tstate(int cpu);
+#ifdef CONFIG_LGE_PM_CANCUN
+extern int get_cancun_status(void);
+#endif
 #endif
