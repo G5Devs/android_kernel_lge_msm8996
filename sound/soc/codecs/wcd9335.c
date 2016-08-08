@@ -5505,10 +5505,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX0 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX0 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX0 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX0 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX0 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX0 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX0 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"RX MIX TX1 MUX", "RX_MIX0", "RX INT0 SEC MIX"},
 	{"RX MIX TX1 MUX", "RX_MIX1", "RX INT1 SEC MIX"},
@@ -5519,10 +5521,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX1 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX1 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX1 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX1 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX1 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX1 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX1 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"RX MIX TX2 MUX", "RX_MIX0", "RX INT0 SEC MIX"},
 	{"RX MIX TX2 MUX", "RX_MIX1", "RX INT1 SEC MIX"},
@@ -5533,10 +5537,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX2 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX2 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX2 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX2 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX2 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX2 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX2 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"RX MIX TX3 MUX", "RX_MIX0", "RX INT0 SEC MIX"},
 	{"RX MIX TX3 MUX", "RX_MIX1", "RX INT1 SEC MIX"},
@@ -5547,10 +5553,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX3 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX3 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX3 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX3 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX3 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX3 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX3 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"RX MIX TX4 MUX", "RX_MIX0", "RX INT0 SEC MIX"},
 	{"RX MIX TX4 MUX", "RX_MIX1", "RX INT1 SEC MIX"},
@@ -5561,10 +5569,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX4 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX4 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX4 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX4 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX4 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX4 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX4 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"RX MIX TX5 MUX", "RX_MIX0", "RX INT0 SEC MIX"},
 	{"RX MIX TX5 MUX", "RX_MIX1", "RX INT1 SEC MIX"},
@@ -5575,10 +5585,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX5 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX5 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX5 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX5 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX5 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX5 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX5 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"RX MIX TX6 MUX", "RX_MIX0", "RX INT0 SEC MIX"},
 	{"RX MIX TX6 MUX", "RX_MIX1", "RX INT1 SEC MIX"},
@@ -5589,10 +5601,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX6 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX6 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX6 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX6 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX6 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX6 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX6 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"RX MIX TX7 MUX", "RX_MIX0", "RX INT0 SEC MIX"},
 	{"RX MIX TX7 MUX", "RX_MIX1", "RX INT1 SEC MIX"},
@@ -5603,10 +5617,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX7 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX7 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX7 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX7 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX7 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX7 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX7 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"RX MIX TX8 MUX", "RX_MIX0", "RX INT0 SEC MIX"},
 	{"RX MIX TX8 MUX", "RX_MIX1", "RX INT1 SEC MIX"},
@@ -5617,10 +5633,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX MIX TX8 MUX", "RX_MIX6", "RX INT6 SEC MIX"},
 	{"RX MIX TX8 MUX", "RX_MIX7", "RX INT7 SEC MIX"},
 	{"RX MIX TX8 MUX", "RX_MIX8", "RX INT8 SEC MIX"},
+#ifndef CONFIG_MACH_LGE
 	{"RX MIX TX8 MUX", "RX_MIX_VBAT5", "RX INT5 VBAT"},
 	{"RX MIX TX8 MUX", "RX_MIX_VBAT6", "RX INT6 VBAT"},
 	{"RX MIX TX8 MUX", "RX_MIX_VBAT7", "RX INT7 VBAT"},
 	{"RX MIX TX8 MUX", "RX_MIX_VBAT8", "RX INT8 VBAT"},
+#endif
 
 	{"ADC MUX0", "DMIC", "DMIC MUX0"},
 	{"ADC MUX0", "AMIC", "AMIC MUX0"},
@@ -5961,8 +5979,10 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX INT5 MIX2", NULL, "RX INT5 SEC MIX"},
 	{"RX INT5 INTERP", NULL, "RX INT5 MIX2"},
 
+#ifndef CONFIG_MACH_LGE
 	{"RX INT5 VBAT", "LO3 VBAT Enable", "RX INT5 INTERP"},
 	{"RX INT5 DAC", NULL, "RX INT5 VBAT"},
+#endif
 
 	{"RX INT5 DAC", NULL, "RX INT5 INTERP"},
 	{"RX INT5 DAC", NULL, "RX_BIAS"},
@@ -5976,8 +5996,10 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX INT6 MIX2", NULL, "RX INT6 SEC MIX"},
 	{"RX INT6 INTERP", NULL, "RX INT6 MIX2"},
 
+#ifndef CONFIG_MACH_LGE
 	{"RX INT6 VBAT", "LO4 VBAT Enable", "RX INT6 INTERP"},
 	{"RX INT6 DAC", NULL, "RX INT6 VBAT"},
+#endif
 
 	{"RX INT6 DAC", NULL, "RX INT6 INTERP"},
 	{"RX INT6 DAC", NULL, "RX_BIAS"},
@@ -5993,8 +6015,10 @@ static const struct snd_soc_dapm_route audio_map[] = {
 
 	{"RX INT7 INTERP", NULL, "RX INT7 MIX2"},
 
+#ifndef CONFIG_MACH_LGE
 	{"RX INT7 VBAT", "SPKRL VBAT Enable", "RX INT7 INTERP"},
 	{"RX INT7 CHAIN", NULL, "RX INT7 VBAT"},
+#endif
 
 	{"RX INT7 CHAIN", NULL, "RX INT7 INTERP"},
 	{"RX INT7 CHAIN", NULL, "RX_BIAS"},
@@ -6006,8 +6030,10 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"RX INT8 SEC MIX", NULL, "RX INT8 SPLINE MIX"},
 	{"RX INT8 INTERP", NULL, "RX INT8 SEC MIX"},
 
+#ifndef CONFIG_MACH_LGE
 	{"RX INT8 VBAT", "SPKRR VBAT Enable", "RX INT8 INTERP"},
 	{"RX INT8 CHAIN", NULL, "RX INT8 VBAT"},
+#endif
 
 	{"RX INT8 CHAIN", NULL, "RX INT8 INTERP"},
 	{"RX INT8 CHAIN", NULL, "RX_BIAS"},
@@ -6934,6 +6960,7 @@ static int tasha_pinctl_mode_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+#ifndef CONFIG_MACH_LGE
 static void wcd_vbat_adc_out_config_2_0(struct wcd_vbat *vbat,
 					struct snd_soc_codec *codec)
 {
@@ -7259,6 +7286,7 @@ static int tasha_codec_vbat_enable_event(struct snd_soc_dapm_widget *w,
 
 	return ret;
 }
+#endif
 
 static const char * const rx_hph_mode_mux_text[] = {
 	"CLS_H_INVALID", "CLS_H_HIFI", "CLS_H_LP", "CLS_AB", "CLS_H_LOHIFI"
@@ -7482,12 +7510,14 @@ static const struct snd_kcontrol_new tasha_snd_controls[] = {
 	SOC_ENUM_EXT("AMIC_5_6 PWR MODE", amic_pwr_lvl_enum,
 		       tasha_amic_pwr_lvl_get, tasha_amic_pwr_lvl_put),
 
+#ifndef CONFIG_MACH_LGE
 	SOC_SINGLE_MULTI_EXT("Vbat ADC data", SND_SOC_NOPM, 0, 0xFFFF, 0, 2,
 			tasha_vbat_adc_data_get, NULL),
 
 	SOC_ENUM_EXT("GSM mode Enable", tasha_vbat_gsm_mode_enum,
 			tasha_vbat_gsm_mode_func_get,
 			tasha_vbat_gsm_mode_func_put),
+#endif
 };
 
 static int tasha_put_dec_enum(struct snd_kcontrol *kcontrol,
@@ -9287,6 +9317,7 @@ static const struct snd_soc_dapm_widget tasha_dapm_widgets[] = {
 			NULL, 0, tasha_codec_spk_boost_event,
 			SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 
+#ifndef CONFIG_MACH_LGE
 	SND_SOC_DAPM_MIXER_E("RX INT5 VBAT", SND_SOC_NOPM, 0, 0,
 			rx_int5_vbat_mix_switch,
 			ARRAY_SIZE(rx_int5_vbat_mix_switch),
@@ -9307,6 +9338,7 @@ static const struct snd_soc_dapm_widget tasha_dapm_widgets[] = {
 			ARRAY_SIZE(rx_int8_vbat_mix_switch),
 			tasha_codec_vbat_enable_event,
 			SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
 
 	SND_SOC_DAPM_MUX("RX INT0 MIX2 INP", WCD9335_CDC_RX0_RX_PATH_CFG1, 4,
 			   0, &rx_int0_mix2_inp_mux),
