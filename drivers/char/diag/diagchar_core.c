@@ -47,6 +47,8 @@
 #include <linux/compat.h>
 #endif
 
+#include "mts_tty.h"
+
 MODULE_DESCRIPTION("Diag Char Driver");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION("1.0");
@@ -1368,8 +1370,10 @@ static int diag_md_session_check(int curr_mode, int req_mode,
 			 * This case tries to change from USB mode to USB mode.
 			 * There is no change required. Return success.
 			 */
-			*change_mode = 0;
-			return 0;
+			if (!mts_tty->run) {
+				*change_mode = 0;
+				return 0;
+			}
 		}
 
 		/*
@@ -2879,6 +2883,9 @@ static ssize_t diagchar_write(struct file *file, const char __user *buf,
 	int err = 0;
 	int pkt_type = 0;
 	int payload_len = 0;
+#ifdef CONFIG_LGE_DM_APP
+    char *buf_cmp;
+#endif
 	const char __user *payload_buf = NULL;
 
 	/*
@@ -2897,6 +2904,14 @@ static ssize_t diagchar_write(struct file *file, const char __user *buf,
 				   __func__, err);
 		return -EIO;
 	}
+#ifdef CONFIG_LGE_DM_APP
+    if (driver->logging_mode == DM_APP_MODE) {
+        /* only diag cmd #250 for supporting testmode tool */
+        buf_cmp = (char *)buf + 4;
+        if (*(buf_cmp) != 0xFA)
+            return 0;
+    }
+#endif
 
 	if (driver->logging_mode == DIAG_USB_MODE && !driver->usb_connected) {
 		if (!((pkt_type == DCI_DATA_TYPE) ||

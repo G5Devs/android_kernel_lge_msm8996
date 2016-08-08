@@ -30,6 +30,7 @@
 #include "diagfwd_socket.h"
 #include "diag_mux.h"
 #include "diag_ipc_logging.h"
+#include "mts_tty.h"
 
 struct data_header {
 	uint8_t control_char;
@@ -307,6 +308,11 @@ static void diagfwd_data_read_done(struct diagfwd_info *fwd_info,
 	}
 
 	if (write_len > 0) {
+		if (mts_tty->run) {
+			if (fwd_info->type == TYPE_DATA)
+				mts_tty_process(write_buf, write_len);
+			goto end;
+		}
 		err = diag_mux_write(DIAG_LOCAL_PROC, write_buf, write_len,
 				     temp_buf->ctxt);
 		if (err) {
