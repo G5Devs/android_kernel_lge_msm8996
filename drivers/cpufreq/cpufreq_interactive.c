@@ -31,6 +31,10 @@
 #include <linux/kthread.h>
 #include <linux/slab.h>
 
+#ifdef CONFIG_LGE_PM_TRITON
+#include "triton.h"
+#endif
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/cpufreq_interactive.h>
 
@@ -566,6 +570,9 @@ static void __cpufreq_interactive_timer(unsigned long data, bool is_notif)
 	}
 
 	new_freq = ppol->freq_table[index].frequency;
+#ifdef CONFIG_LGE_PM_TRITON
+	update_cpu_load(data);
+#endif
 
 	/*
 	 * Do not scale below floor_freq unless we have been at or above the
@@ -686,8 +693,13 @@ static int cpufreq_interactive_speedchange_task(void *data)
 				up_read(&ppol->enable_sem);
 				continue;
 			}
-
+#ifdef CONFIG_LGE_PM_TRITON
+			stack((int)cpu, ppol->target_freq);
+#endif
 			if (ppol->target_freq != ppol->policy->cur)
+#ifdef CONFIG_LGE_PM_TRITON
+				if(get_tstate(cpu))
+#endif
 				__cpufreq_driver_target(ppol->policy,
 							ppol->target_freq,
 							CPUFREQ_RELATION_H);
@@ -1740,6 +1752,50 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 	}
 	return 0;
 }
+#ifdef CONFIG_LGE_PM_TRITON
+struct cpufreq_policy *cpufreq_interactive_get_policy(int cpu)
+{
+	struct cpufreq_interactive_policyinfo *ppol = per_cpu(polinfo, cpu);
+	return ppol->policy;
+}
+int cpufreq_interactive_governor_stat(int cpu)
+{
+	int result = 0;
+	struct cpufreq_interactive_policyinfo *ppol = per_cpu(polinfo, cpu);
+
+	if (speedchange_task == current)
+		return -EBUSY;
+
+	if (!ppol || ppol->reject_notification)
+		return -EBUSY;
+
+	if (!down_read_trylock(&ppol->enable_sem))
+		return -EBUSY;
+	if (!ppol->governor_enabled) {
+		up_read(&ppol->enable_sem);
+		return -EBUSY;
+	}
+	if(!ppol->policy->governor_data) {
+		up_read(&ppol->enable_sem);
+		return -EINVAL;
+	}
+	result = ppol->governor_enabled;
+	up_read(&ppol->enable_sem);
+	/*
+	    OK : 0
+	    NOK > 0
+	*/
+	return !result;
+}
+unsigned int cpufreq_restore_freq(unsigned long data)
+{
+	if(!cpufreq_interactive_governor_stat((int)data)) {
+		cpufreq_interactive_timer_resched(data, false);
+	}
+	return 0;
+}
+
+#endif
 
 #ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE
 static
