@@ -2,3 +2,29 @@ config MACH_LGE
 	bool "Machine LGE"
 	help
 	  Support for machine LGE.
+
+
+menu "LGE Specific Patches"
+
+config LGE_PM_CHARGING_CONTROLLER
+	tristate "LGE Charging controller"
+	default n
+	depends on MACH_LGE
+	help
+	  enable the LGE Charging controller
+
+config LGE_PM_CHARGING_SCENARIO
+	tristate "Support LGE PM Charging Scenario"
+	default n
+	depends on MACH_LGE
+	help
+	  LGE PM Charging Scenario
+
+config LGE_PM_PSEUDO_BATTERY
+	tristate "Support pseudo battery mode"
+	depends on MACH_LGE
+	default n
+	help
+	  Say Y here to enable pseudo mode setting
+
+endmenu
