@@ -184,8 +184,18 @@ void ufshcd_update_query_stats(struct ufs_hba *hba,
 
 /* Query request retries */
 #define QUERY_REQ_RETRIES 10
+
+/*
+ * LGE_UPDATE_S by h1-bsp-fs@lge.com 2016-01-21
+ * Samsung recommend qeury request timeout from 100ms to 1200ms
+ * LGE_UPDATE_E
+ */
 /* Query request timeout */
+#ifdef CONFIG_MACH_LGE
+#define QUERY_REQ_TIMEOUT 1200 /* msec */
+#else
 #define QUERY_REQ_TIMEOUT 100 /* msec */
+#endif
 /*
  * Query request timeout for fDeviceInit flag
  * fDeviceInit query response time for some devices is too large that default
@@ -6627,7 +6637,9 @@ static void ufshcd_tune_unipro_params(struct ufs_hba *hba)
 	if (hba->dev_quirks & UFS_DEVICE_QUIRK_HOST_PA_TACTIVATE)
 		ufshcd_quirk_tune_host_pa_tactivate(hba);
 
+#ifdef CONFIG_MACH_LGE
 	ufshcd_vops_apply_dev_quirks(hba);
+#endif
 }
 
 static void ufshcd_clear_dbg_ufs_stats(struct ufs_hba *hba)
@@ -6679,8 +6691,14 @@ static void ufshcd_apply_pm_quirks(struct ufs_hba *hba)
 static int ufshcd_probe_hba(struct ufs_hba *hba)
 {
 	int ret;
+#ifdef CONFIG_MACH_LGE
+	int lge_flag = 0;
+#endif
 	ktime_t start = ktime_get();
 
+#ifdef CONFIG_MACH_LGE
+lge_retry:
+#endif
 	ret = ufshcd_link_startup(hba);
 	if (ret)
 		goto out;
@@ -6699,8 +6717,20 @@ static int ufshcd_probe_hba(struct ufs_hba *hba)
 		goto out;
 
 	ret = ufshcd_complete_dev_init(hba);
+#ifdef CONFIG_MACH_LGE
+	if (ret) {
+		if (!lge_flag) {
+			lge_flag = 1;
+			printk("[LGE] : goto link startup again!!\n");
+			goto lge_retry;
+		}
+		else
+			goto out;
+	}
+#else
 	if (ret)
 		goto out;
+#endif
 
 	ufs_advertise_fixup_device(hba);
 	ufshcd_tune_unipro_params(hba);

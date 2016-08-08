@@ -25,7 +25,9 @@
 #include "unipro.h"
 #include "ufs-qcom.h"
 #include "ufshci.h"
+#ifdef CONFIG_MACH_LGE
 #include "ufs_quirks.h"
+#endif
 #include "ufs-qcom-ice.h"
 #include "ufs-qcom-debugfs.h"
 #include <linux/clk/msm-clk.h>
@@ -1177,6 +1179,7 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_MACH_LGE
 static int ufs_qcom_quirk_host_pa_saveconfigtime(struct ufs_hba *hba)
 {
 	int err;
@@ -1204,6 +1207,7 @@ static int ufs_qcom_apply_dev_quirks(struct ufs_hba *hba)
 
 	return err;
 }
+#endif
 
 static u32 ufs_qcom_get_ufs_hci_version(struct ufs_hba *hba)
 {
@@ -2302,7 +2306,9 @@ static struct ufs_hba_variant_ops ufs_hba_qcom_vops = {
 	.hce_enable_notify	= ufs_qcom_hce_enable_notify,
 	.link_startup_notify	= ufs_qcom_link_startup_notify,
 	.pwr_change_notify	= ufs_qcom_pwr_change_notify,
+#ifdef CONFIG_MACH_LGE
 	.apply_dev_quirks	= ufs_qcom_apply_dev_quirks,
+#endif
 	.suspend		= ufs_qcom_suspend,
 	.resume			= ufs_qcom_resume,
 	.full_reset		= ufs_qcom_full_reset,
