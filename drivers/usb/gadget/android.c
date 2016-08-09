@@ -676,6 +676,11 @@ static void ffs_function_enable(struct android_usb_function *f)
 	struct android_dev *dev = f->android_dev;
 	struct functionfs_config *config = f->config;
 
+#ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
+	if (config->enabled)
+		return;
+#endif
+
 	config->enabled = true;
 
 #ifdef CONFIG_LGE_USB_G_ANDROID
@@ -691,6 +696,11 @@ static void ffs_function_disable(struct android_usb_function *f)
 {
 	struct android_dev *dev = f->android_dev;
 	struct functionfs_config *config = f->config;
+
+#ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
+	if (!config->enabled)
+		return;
+#endif
 
 	config->enabled = false;
 
@@ -3476,6 +3486,9 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 
 	dev->cdev->gadget->streaming_enabled = false;
 	while (b) {
+#ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
+		ffs_enabled = 0;
+#endif
 		conf_str = strsep(&b, ":");
 		if (!conf_str)
 			continue;
@@ -3688,6 +3701,21 @@ out:
 	return snprintf(buf, PAGE_SIZE, "%s\n", state);
 }
 
+#ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
+static ssize_t config_num_show(struct device *pdev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct android_dev *dev = dev_get_drvdata(pdev);
+	u8 config_num = 0;
+
+	if (dev->cdev->config)
+		config_num = dev->cdev->config->bConfigurationValue;
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", config_num);
+}
+#endif
+
 #define ANDROID_DEV_ATTR(field, format_string)				\
 static ssize_t								\
 field ## _show(struct device *pdev, struct device_attribute *attr,	\
@@ -3779,6 +3807,9 @@ ANDROID_DEV_ATTR(idle_pc_rpm_no_int_secs, "%u\n");
 static DEVICE_ATTR(state, S_IRUGO, state_show, NULL);
 static DEVICE_ATTR(remote_wakeup, S_IRUGO | S_IWUSR,
 		remote_wakeup_show, remote_wakeup_store);
+#ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
+static DEVICE_ATTR(config_num, S_IRUGO, config_num_show, NULL);
+#endif
 
 static struct device_attribute *android_usb_attributes[] = {
 	&dev_attr_idVendor,
@@ -3801,6 +3832,9 @@ static struct device_attribute *android_usb_attributes[] = {
 	&dev_attr_pm_qos_state,
 	&dev_attr_state,
 	&dev_attr_remote_wakeup,
+#ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
+	&dev_attr_config_num,
+#endif
 #ifdef CONFIG_LGE_USB_MAXIM_EVP
 	&dev_attr_evp_setting_voltage,
 	&dev_attr_evp_status,
@@ -3983,10 +4017,22 @@ android_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *c)
 			f = f_holder->f;
 			if (f->ctrlrequest) {
 				value = f->ctrlrequest(f, cdev, c);
+#ifndef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
 				if (value >= 0)
 					break;
+#else
+				if (value >= 0) {
+					if (!strcmp(f->name, "mtp"))
+						goto list_exit;
+					else
+						break;
+				}
+#endif
 			}
 		}
+#ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
+list_exit:
+#endif
 
 	/*
 	 * skip the  work when 2nd set config arrives
