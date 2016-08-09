@@ -490,6 +490,16 @@ config LGE_USB_FACTORY
 
 	default y
 
+config LGE_USB_DIAG_LOCK
+	boolean "feature for usb diag access lock"
+	depends on LGE_USB_G_ANDROID
+	help
+	  this feature should be applied to meet usb diag lock requirement
+
+	  Say y if this must be needed.
+
+	default y
+
 config LGE_USB_TYPE_C
 	bool "USB Type-C support"
 	help

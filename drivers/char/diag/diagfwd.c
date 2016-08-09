@@ -472,6 +472,8 @@ void diag_update_md_clients(unsigned int type)
 	wake_up_interruptible(&driver->wait_q);
 	mutex_unlock(&driver->diagchar_mutex);
 }
+
+
 void diag_update_sleeping_process(int process_id, int data_type)
 {
 	int i;
@@ -491,6 +493,7 @@ static int diag_send_data(struct diag_cmd_reg_t *entry, unsigned char *buf,
 {
 	if (!entry)
 		return -EIO;
+
 
 	if (entry->proc == APPS_DATA) {
 		diag_update_pkt_buffer(buf, len, PKT_TYPE);
@@ -869,6 +872,38 @@ void diag_send_error_rsp(unsigned char *buf, int len)
 	diag_send_rsp(driver->apps_rsp_buf, len + 1);
 }
 
+#if defined(CONFIG_LGE_USB_DIAG_LOCK)
+extern int get_diag_enable(void);
+#define DIAG_ENABLE			1
+#define DIAG_DISABLE			0
+#define COMMAND_PORT_LOCK		0xA1
+#define COMMAND_WEB_DOWNLOAD		0xEF
+#define COMMAND_ASYNC_HDLC_FLAG		0x7E
+#define COMMAND_DLOAD_RESET		0x3A
+#define COMMAND_TEST_MODE		0xFA
+#define COMMAND_TEST_MODE_RESET		0x29
+
+int is_filtering_command(char *buf)
+{
+	if (buf == NULL)
+		return 0;
+
+	switch(buf[0]) {
+		case COMMAND_PORT_LOCK :
+		case COMMAND_WEB_DOWNLOAD :
+		case COMMAND_ASYNC_HDLC_FLAG :
+		case COMMAND_DLOAD_RESET :
+		case COMMAND_TEST_MODE :
+		case COMMAND_TEST_MODE_RESET :
+			return 1;
+		default:
+			break;
+	}
+
+	return 0;
+}
+#endif
+
 int diag_process_apps_pkt(unsigned char *buf, int len,
 			struct diag_md_session_t *info)
 {
@@ -882,6 +917,13 @@ int diag_process_apps_pkt(unsigned char *buf, int len,
 
 	if (!buf)
 		return -EIO;
+
+#if defined(CONFIG_LGE_USB_DIAG_LOCK)
+	/* buf[0] : 0xA1(161) is a diag command for mdm port lock */
+	if (!is_filtering_command(buf) && (get_diag_enable() == DIAG_DISABLE)) {
+		return 0;
+	}
+#endif
 
 	/* Check if the command is a supported mask command */
 	mask_ret = diag_process_apps_masks(buf, len, info);
