@@ -444,4 +444,6 @@ config LGE_USB_TYPE_C
 	help
 	  Say Y here to add support for USB Type-C.
 
+config LGE_USB_MAXIM_EVP
+       boolean "EVP charger support"
 endif # USB_GADGET

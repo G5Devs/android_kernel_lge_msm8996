@@ -167,6 +167,17 @@ enum dwc3_chg_type {
 	DWC3_FLOATED_CHARGER,
 };
 
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+enum hvdcp_chg_type {
+	HVDCP_NONE = 0,
+	HVDCP_LEGACY_DCP,
+	HVDCP_EVP_DYNAMIC,
+	HVDCP_EVP_SIMPLE,
+	HVDCP_QC20,
+	INVALID_HVDCP,
+};
+#endif
+
 struct dwc3_msm {
 	struct device *dev;
 	void __iomem *base;
@@ -260,6 +271,13 @@ struct dwc3_msm {
 	atomic_t                in_p3;
 	unsigned int		lpm_to_suspend_delay;
 	bool			init;
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	bool				evp_detect;
+	bool				pwr_event_irq_disabled;
+	enum hvdcp_chg_type	evp_sts;
+	struct delayed_work	evp_connect_work;
+	atomic_t			evp_detecting;
+#endif
 #ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
 	struct hrtimer		floated_chg_hrtimer;
 	struct delayed_work	floated_chg_work;
@@ -369,6 +387,150 @@ static enum hrtimer_restart floated_chg_hrtimer_func(struct hrtimer *hrtimer)
 	schedule_delayed_work(&mdwc->floated_chg_work, 0);
 
 	return HRTIMER_NORESTART;
+}
+#endif
+
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+static int dwc3_otg_start_peripheral(struct dwc3_msm *mdwc, int on);
+
+static void dwc3_evp_status(struct dwc3_msm *mdwc, unsigned evp_sts)
+{
+	enum hvdcp_chg_type hvdcp_type;
+
+	if (!(evp_sts & EVP_STS_DCP)) {
+		dev_info(mdwc->dev, "%s: Cable is not DCP.\n", __func__);
+		hvdcp_type = HVDCP_NONE;
+	} else if (evp_sts & EVP_STS_QC20) {
+		dev_info(mdwc->dev, "%s: Cable is QC2.0\n", __func__);
+		hvdcp_type = HVDCP_QC20;
+	} else if (!(evp_sts & EVP_STS_EVP)) {
+		dev_info(mdwc->dev, "%s: Cable is legacy DCP.\n", __func__);
+		hvdcp_type = HVDCP_LEGACY_DCP;
+	} else if (evp_sts & EVP_STS_DYNAMIC) {
+		dev_info(mdwc->dev, "%s: Cable is EVP-dynamic.\n", __func__);
+		hvdcp_type = HVDCP_EVP_DYNAMIC;
+	} else if (evp_sts & EVP_STS_SIMPLE) {
+		dev_info(mdwc->dev, "%s: Cable is EVP-simple.\n", __func__);
+		hvdcp_type = HVDCP_EVP_SIMPLE;
+	} else {
+		dev_err(mdwc->dev, "%s: INVALID HVDCP TYPE.\n", __func__);
+		hvdcp_type = INVALID_HVDCP;
+	}
+	mdwc->evp_sts = hvdcp_type;
+	power_supply_changed(&mdwc->usb_psy);
+}
+
+static void dwc3_evp_event_notify(struct dwc3_msm *mdwc)
+{
+	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
+
+	if (!dwc) {
+		dev_err(mdwc->dev, "%s: dwc driver data get failed.\n", __func__);
+		return;
+	}
+
+	if (!(dwc->gadget.evp_sts & EVP_STS_DCP)) {
+		dev_err(mdwc->dev, "XCVR: Invalid EVP detection request.\n");
+		return;
+	}
+
+	if (dwc->gadget.evp_sts & EVP_STS_DETGO) {
+		dev_err(mdwc->dev, "XCVR: Already EVP detection request received.\n");
+		return;
+	}
+
+	if (mdwc->evp_detect) {
+		dev_info(mdwc->dev, "XCVR: EVP detection start.\n");
+		dwc->gadget.evp_sts |= EVP_STS_DETGO;
+		schedule_delayed_work(&mdwc->sm_work, 0);
+	} else {
+		dwc->gadget.evp_sts |= EVP_STS_QC20;
+		dwc3_evp_status(mdwc, dwc->gadget.evp_sts);
+		dev_info(mdwc->dev, "XCVR: QC2.0 detected, keep dwc3 in LPM(%d).\n",
+					atomic_read(&dwc->in_lpm));
+	}
+}
+
+static void dwc3_otg_evp_connect_work(struct work_struct *w)
+{
+	struct power_supply *batt_psy;
+	union power_supply_propval prop;
+
+	batt_psy = power_supply_get_by_name("battery");
+	if (!batt_psy) {
+		pr_err("%s battery psy get failed.\n", __func__);
+		return;
+	}
+
+	prop.intval = 1;
+
+#ifdef CONFIG_LGE_PM_MAXIM_EVP_CONTROL
+	batt_psy->set_property(batt_psy, POWER_SUPPLY_PROP_ENABLE_EVP_CHG, &prop);
+#endif
+	pr_info("%s EVP connected.\n", __func__);
+}
+
+static int dwc3_otg_evp_connect(struct dwc3_msm *mdwc, bool evp_connect)
+{
+	if (evp_connect)
+		schedule_delayed_work(&mdwc->evp_connect_work, 0);
+	else
+		cancel_delayed_work(&mdwc->evp_connect_work);
+
+	return 0;
+}
+
+void dwc_dcp_check_work(struct work_struct *w)
+{
+	struct dwc3 *dwc = container_of(w, struct dwc3, dcp_check_work.work);
+	struct dwc3_msm *mdwc = dev_get_drvdata(dwc->dev->parent);
+	int ret = 0;
+	pr_info("%s %s connected.\n",
+				__func__, (dwc->gadget.evp_sts & EVP_STS_EVP) ? "EVP" : "DCP");
+	if (dwc->gadget.evp_sts & EVP_STS_EVP) {
+		/*If erratic error happens while EVP enumeration, err count clear here*/
+		dwc->evp_usbctrl_err_cnt = 0;
+	}
+
+	if (dwc->gadget.evp_sts & EVP_STS_DYNAMIC) {
+		/*Dynamic mode*/
+		pr_info("%s : EVP-dynamic mode\n", __func__);
+	} else if (dwc->gadget.evp_sts & EVP_STS_SIMPLE) {
+		/*Simple mode
+		 *Dwc3 going to LPM, but keep DP pullup.
+		 */
+		pr_info("%s : EVP-simple mode, dwc3 into LPM.\n", __func__);
+		dwc->gadget.evp_sts |= EVP_STS_SLEEP;
+		if (!test_bit(B_SESS_VLD, &mdwc->inputs)) {
+			dwc->gadget.evp_sts &= ~EVP_STS_SLEEP;
+			pr_err("%s : EVP unplugged, sm_work handle suspending. %u\n",
+				__func__, dwc->gadget.evp_sts);
+			return;
+		}
+		ret = pm_runtime_put_sync(mdwc->dev);
+		if (ret)
+			pr_err("%s : pm_runtime_put_sync result = %d.\n", __func__, ret);
+		dbg_event(0xFF, "Dcpchk sim",
+				atomic_read(&mdwc->dev->power.usage_count));
+	} else if ((mdwc->otg_state == OTG_STATE_B_PERIPHERAL)
+				&& (dwc->gadget.evp_sts & EVP_STS_DCP)) {
+		pr_info("%s : DCP, dwc3 into LPM.\n", __func__);
+		dwc3_otg_start_peripheral(mdwc, 0);
+		ret = pm_runtime_put_sync(mdwc->dev);
+		if (ret)
+			pr_err("%s : pm_runtime_put_sync result = %d.\n", __func__, ret);
+		mdwc->otg_state = OTG_STATE_B_IDLE;
+		mdwc->chg_type = DWC3_INVALID_CHARGER;
+		dbg_event(0xFF, "Dcpchk dcp",
+				atomic_read(&mdwc->dev->power.usage_count));
+	}
+	if ((ret == -EBUSY) && atomic_read(&mdwc->dev->power.child_count)) {
+		pr_info("%s : child count exists, and retry suspend\n",	__func__);
+		pm_runtime_idle(dwc->dev);
+		usleep_range(1000, 1200);
+		pm_runtime_idle(mdwc->dev);
+	}
+	dwc3_evp_status(mdwc, dwc->gadget.evp_sts);
 }
 #endif
 
@@ -1258,16 +1420,36 @@ static void dwc3_msm_notify_event(struct dwc3 *dwc, unsigned event)
 {
 	struct dwc3_msm *mdwc = dev_get_drvdata(dwc->dev->parent);
 	u32 reg;
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	static DEFINE_RATELIMIT_STATE(rl, 10*HZ, 1);
+#endif
 
 	if (dwc->revision < DWC3_REVISION_230A)
 		return;
 
 	switch (event) {
 	case DWC3_CONTROLLER_ERROR_EVENT:
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+		if (__ratelimit(&rl))
+#endif
 		dev_info(mdwc->dev,
 			"DWC3_CONTROLLER_ERROR_EVENT received, irq cnt %lu\n",
 			dwc->irq_cnt);
-
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+		if (dwc->gadget.evp_sts & EVP_STS_DCP) {
+			if (dwc->evp_usbctrl_err_cnt > 500) {
+				/*
+				 * Some erratic error could happens during EVP enumeration.
+				 * We need to block reset if too many erratic error occurs.
+				 * If not, it will be cause watchdong bite.
+				 */
+				dwc->evp_usbctrl_err_cnt = 0;
+			} else {
+				dwc->err_evt_seen = 0;
+				break;
+			}
+		}
+#endif
 		dwc3_gadget_disable_irq(dwc);
 
 		/* prevent core from generating interrupts until recovery */
@@ -1351,8 +1533,20 @@ static void dwc3_msm_notify_event(struct dwc3 *dwc, unsigned event)
 		break;
 	case DWC3_CONTROLLER_SET_CURRENT_DRAW_EVENT:
 		dev_dbg(mdwc->dev, "DWC3_CONTROLLER_SET_CURRENT_DRAW_EVENT received\n");
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+		if (dwc->gadget.evp_sts & EVP_STS_DCP) {
+			dev_dbg(mdwc->dev, "DWC3_CONTROLLER_SET_CURRENT_DRAW_EVENT ignored\n");
+			break;
+		}
+#endif
 		dwc3_msm_gadget_vbus_draw(mdwc, dwc->vbus_draw);
 		break;
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	case DWC3_EVP_CONNECT_EVENT:
+		dev_dbg(mdwc->dev, "DWC3_EVP_CONNECT_EVENT received : %d\n", dwc->evp_connect);
+		dwc3_otg_evp_connect(mdwc, dwc->evp_connect);
+		break;
+#endif
 	default:
 		dev_dbg(mdwc->dev, "unknown dwc3 event\n");
 		break;
@@ -1430,9 +1624,16 @@ static int dwc3_msm_prepare_suspend(struct dwc3_msm *mdwc)
 {
 	unsigned long timeout;
 	u32 reg = 0;
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
+#endif
 
 	if ((mdwc->in_host_mode || mdwc->vbus_active)
 			&& dwc3_msm_is_superspeed(mdwc)) {
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+		if (!(dwc->gadget.evp_sts & EVP_STS_DCP)
+				&& (mdwc->chg_type != DWC3_DCP_CHARGER))
+#endif
 		if (!atomic_read(&mdwc->in_p3)) {
 			dev_err(mdwc->dev, "Not in P3,aborting LPM sequence\n");
 			return -EBUSY;
@@ -1551,6 +1752,9 @@ static int dwc3_msm_suspend(struct dwc3_msm *mdwc)
 	 * then check controller state of L2 and break
 	 * LPM sequence. Check this for device bus suspend case.
 	 */
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	if (!(dwc->gadget.evp_sts & EVP_STS_DCP)) {
+#endif
 	if ((dwc->is_drd && mdwc->otg_state == OTG_STATE_B_SUSPEND) &&
 		(dwc->gadget.state != USB_STATE_CONFIGURED)) {
 		pr_err("%s(): Trying to go in LPM with state:%d\n",
@@ -1558,7 +1762,9 @@ static int dwc3_msm_suspend(struct dwc3_msm *mdwc)
 		pr_err("%s(): LPM is not performed.\n", __func__);
 		return -EBUSY;
 	}
-
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	}
+#endif
 	ret = dwc3_msm_prepare_suspend(mdwc);
 	if (ret)
 		return ret;
@@ -1577,6 +1783,10 @@ static int dwc3_msm_suspend(struct dwc3_msm *mdwc)
 		dwc3_msm_wake_interrupt_enable(mdwc, true);
 		enable_irq_wake(mdwc->pwr_event_irq);
 	}
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	if (dwc->gadget.evp_sts & EVP_STS_EVP)
+		dwc3_gadget_disable_irq(dwc);
+#endif
 
 	/* Suspend HS PHY */
 	usb_phy_set_suspend(mdwc->hs_phy, 1);
@@ -2082,6 +2292,16 @@ static int dwc3_msm_power_get_property_usb(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_USB_OTG:
 		val->intval = !mdwc->id_state;
 		break;
+#if defined CONFIG_LGE_USB_MAXIM_EVP
+#if defined CONFIG_LGE_PM_MAXIM_EVP_CONTROL
+	case POWER_SUPPLY_PROP_EVP_VOL:
+		dwc3_msm_gadget_func_io(psy, &val->intval, false);
+		break;
+#endif
+	case POWER_SUPPLY_PROP_HVDCP_TYPE:
+		val->intval = (int)mdwc->evp_sts;
+		break;
+#endif
 #ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
 	case POWER_SUPPLY_PROP_APSD_RERUN_NEED:
 		val->intval = mdwc->apsd_rerun_need;
@@ -2117,6 +2337,9 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 	struct dwc3_msm *mdwc = container_of(psy, struct dwc3_msm,
 								usb_psy);
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
+#if defined CONFIG_LGE_USB_MAXIM_EVP && defined CONFIG_LGE_PM_MAXIM_EVP_CONTROL
+	static int evp_vol;
+#endif
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_USB_OTG:
@@ -2145,6 +2368,9 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 #endif
 		dev_dbg(mdwc->dev, "%s: notify xceiv event with val:%d\n",
 							__func__, val->intval);
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+		atomic_set(&mdwc->evp_detecting, 0);
+#endif
 		/*
 		 * Now otg_sm_work() state machine waits for USB cable status.
 		 * Hence here it makes sure that schedule resume work only if
@@ -2254,6 +2480,24 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_HEALTH:
 		mdwc->health_status = val->intval;
 		break;
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	case POWER_SUPPLY_PROP_EVP_DETECT_START:
+		mdwc->evp_detect = val->intval;
+		if (atomic_read(&mdwc->evp_detecting)) {
+			dev_info(mdwc->dev, "%s: EVP detection already started.\n", __func__);
+			return 0;
+		}
+		atomic_set(&mdwc->evp_detecting, 1);
+		dev_dbg(mdwc->dev, "%s: EVP detection start? %d\n", __func__, val->intval);
+		dwc3_evp_event_notify(mdwc);
+		break;
+#endif
+#if defined CONFIG_LGE_USB_MAXIM_EVP && defined CONFIG_LGE_PM_MAXIM_EVP_CONTROL
+	case POWER_SUPPLY_PROP_EVP_VOL:
+		evp_vol = val->intval;
+		dwc3_msm_gadget_func_io(psy, &evp_vol, true);
+		break;
+#endif
 #ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
 	case POWER_SUPPLY_PROP_APSD_RERUN_NEED:
 		mdwc->apsd_rerun_need = val->intval;
@@ -2341,6 +2585,9 @@ static enum power_supply_property dwc3_msm_pm_power_props_usb[] = {
 	POWER_SUPPLY_PROP_TYPE,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_USB_OTG,
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	POWER_SUPPLY_PROP_HVDCP_TYPE,
+#endif
 #ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
 	POWER_SUPPLY_PROP_APSD_RERUN_NEED,
 #endif
@@ -2562,6 +2809,9 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&mdwc->sm_work, dwc3_otg_sm_work);
 #ifdef CONFIG_LGE_PM_CABLE_DETECTION
 	INIT_DELAYED_WORK(&mdwc->cable_adc_work, dwc3_cable_adc_work);
+#endif
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	INIT_DELAYED_WORK(&mdwc->evp_connect_work, dwc3_otg_evp_connect_work);
 #endif
 #ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
 	INIT_DELAYED_WORK(&mdwc->floated_chg_work, dwc3_floated_chg_work);
@@ -2934,6 +3184,9 @@ static int dwc3_msm_remove(struct platform_device *pdev)
 	cancel_delayed_work_sync(&mdwc->sm_work);
 #ifdef CONFIG_LGE_PM_CABLE_DETECTION
 	cancel_delayed_work_sync(&mdwc->cable_adc_work);
+#endif
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+	cancel_delayed_work_sync(&mdwc->evp_connect_work);
 #endif
 	if (mdwc->usb_psy.dev)
 		power_supply_unregister(&mdwc->usb_psy);
@@ -3406,6 +3659,22 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 			dbg_event(0xFF, "undef_b_sess_vld", 0);
 			switch (mdwc->chg_type) {
 			case DWC3_DCP_CHARGER:
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+				atomic_set(&dwc->in_lpm, 0);
+				pm_runtime_set_active(mdwc->dev);
+				pm_runtime_enable(mdwc->dev);
+				pm_runtime_get_noresume(mdwc->dev);
+				dwc3_initialize(mdwc);
+				dwc3_msm_gadget_vbus_draw(mdwc,
+						DEFAULT_DCP_CHG_MAX);
+				dwc->gadget.evp_sts |= EVP_STS_DCP;
+				pm_runtime_put_sync(mdwc->dev);
+				dbg_event(0xFF, "Undef DCP",
+					atomic_read(
+						&mdwc->dev->power.usage_count));
+				mdwc->otg_state = OTG_STATE_B_IDLE;
+				break;
+#endif
 			case DWC3_PROPRIETARY_CHARGER:
 				dev_dbg(mdwc->dev, "DCP charger\n");
 #ifdef CONFIG_LGE_PM_CABLE_DETECTION
@@ -3481,6 +3750,24 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 #endif
 			switch (mdwc->chg_type) {
 			case DWC3_DCP_CHARGER:
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+				dev_dbg(mdwc->dev, "DCP charger, evp_sts %u\n", dwc->gadget.evp_sts);
+				if (dwc->gadget.evp_sts & EVP_STS_DETGO) {
+					pm_runtime_get_sync(mdwc->dev);
+					dbg_event(0xFF, "Dcp gsync",
+						atomic_read(
+							&mdwc->dev->power.usage_count));
+					dwc3_otg_start_peripheral(mdwc, 1);
+					mdwc->otg_state = OTG_STATE_B_PERIPHERAL;
+					work = 1;
+				} else {
+					dwc3_msm_gadget_vbus_draw(mdwc,
+							DEFAULT_DCP_CHG_MAX);
+					dwc->gadget.evp_sts |= EVP_STS_DCP;
+				}
+				break;
+#endif
+
 			case DWC3_PROPRIETARY_CHARGER:
 				dev_dbg(mdwc->dev, "lpm, DCP charger\n");
 				dwc3_msm_gadget_vbus_draw(mdwc,
@@ -3513,6 +3800,11 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 #ifdef CONFIG_LGE_PM_CABLE_DETECTION
 			mdwc->read_cable_adc(mdwc, false);
 #endif
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+			mdwc->evp_sts = 0;
+			dwc->gadget.evp_sts = 0;
+			dwc->evp_usbctrl_err_cnt = 0;
+#endif
 			dwc3_msm_gadget_vbus_draw(mdwc, 0);
 			dev_dbg(mdwc->dev, "No device, allowing suspend\n");
 		}
@@ -3529,10 +3821,18 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 			 * which was incremented upon cable connect in
 			 * OTG_STATE_B_IDLE state
 			 */
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+			if (!(dwc->gadget.evp_sts & EVP_STS_SIMPLE))
+#endif
 			pm_runtime_put_sync(mdwc->dev);
 			dbg_event(0xFF, "BPER psync",
 				atomic_read(&mdwc->dev->power.usage_count));
 			mdwc->chg_type = DWC3_INVALID_CHARGER;
+#ifdef CONFIG_LGE_USB_MAXIM_EVP
+			mdwc->evp_sts = 0;
+			dwc->gadget.evp_sts = 0;
+			dwc->evp_usbctrl_err_cnt = 0;
+#endif
 			work = 1;
 		} else if (test_bit(B_SUSPEND, &mdwc->inputs) &&
 			test_bit(B_SESS_VLD, &mdwc->inputs)) {
