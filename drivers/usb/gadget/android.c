@@ -1222,7 +1222,11 @@ ncm_function_init(struct android_usb_function *f, struct usb_composite_dev *c)
 
 	f->config = config;
 
+#ifdef CONFIG_LGE_USB_G_NCM
+	return ncm_init();
+#else
 	return 0;
+#endif
 }
 
 static void ncm_function_cleanup(struct android_usb_function *f)
@@ -1235,8 +1239,14 @@ static void ncm_function_cleanup(struct android_usb_function *f)
 
 	kfree(f->config);
 	f->config = NULL;
+#ifdef CONFIG_LGE_USB_G_NCM
+	ncm_cleanup();
+#endif
 }
 
+#ifdef CONFIG_LGE_USB_G_NCM
+static char host_addr2[14];
+#endif
 static int
 ncm_function_bind_config(struct android_usb_function *f,
 				struct usb_configuration *c)
@@ -1259,11 +1269,21 @@ ncm_function_bind_config(struct android_usb_function *f,
 		return PTR_ERR(ncm->fi);
 
 	ncm_opts = container_of(ncm->fi, struct f_ncm_opts, func_inst);
+#ifdef CONFIG_LGE_USB_G_NCM
+	strlcpy(ncm_opts->net->name, "usb%d", sizeof(ncm_opts->net->name));
+#else
 	strlcpy(ncm_opts->net->name, "ncm%d", sizeof(ncm_opts->net->name));
+#endif
 
 	gether_set_qmult(ncm_opts->net, qmult);
+
+#ifdef CONFIG_LGE_USB_G_NCM
+	if (!gether_set_host_addr(ncm_opts->net, host_addr2))
+		pr_info("using host ethernet address: %s", host_addr2);
+#else
 	if (!gether_set_host_addr(ncm_opts->net, host_addr))
 		pr_info("using host ethernet address: %s", host_addr);
+#endif
 	if (!gether_set_dev_addr(ncm_opts->net, dev_addr))
 		pr_info("using self ethernet address: %s", dev_addr);
 
@@ -1276,6 +1296,9 @@ ncm_function_bind_config(struct android_usb_function *f,
 
 	ncm_opts->bound = true;
 	gether_get_host_addr_u8(ncm_opts->net, ncm->ethaddr);
+#ifdef CONFIG_LGE_USB_G_NCM
+	gether_get_host_addr_cdc(ncm_opts->net, host_addr2, sizeof(host_addr2));
+#endif
 
 	ncm->func = usb_get_function(ncm->fi);
 	if (IS_ERR(ncm->func)) {
@@ -1293,6 +1316,24 @@ static void ncm_function_unbind_config(struct android_usb_function *f,
 
 	usb_put_function_instance(ncm->fi);
 }
+
+#ifdef CONFIG_LGE_USB_G_NCM
+static int ncm_function_ctrlrequest(struct android_usb_function *f,
+					struct usb_composite_dev *cdev,
+					const struct usb_ctrlrequest *c)
+{
+	return ncm_ctrlrequest(cdev, c);
+}
+
+static ssize_t ncm_start_requested_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", get_ncm_start_requested());
+}
+
+static DEVICE_ATTR(ncm_start_requested, S_IRUGO, ncm_start_requested_show, NULL);
+#endif
+
 
 static ssize_t ncm_ethaddr_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -1322,6 +1363,9 @@ static DEVICE_ATTR(ncm_ethaddr, S_IRUGO | S_IWUSR, ncm_ethaddr_show,
 					       ncm_ethaddr_store);
 static struct device_attribute *ncm_function_attributes[] = {
 	&dev_attr_ncm_ethaddr,
+#ifdef CONFIG_LGE_USB_G_NCM
+	&dev_attr_ncm_start_requested,
+#endif
 	NULL
 };
 
@@ -1331,6 +1375,9 @@ static struct android_usb_function ncm_function = {
 	.cleanup	= ncm_function_cleanup,
 	.bind_config	= ncm_function_bind_config,
 	.unbind_config	= ncm_function_unbind_config,
+#ifdef CONFIG_LGE_USB_G_NCM
+	.ctrlrequest	= ncm_function_ctrlrequest,
+#endif
 	.attributes	= ncm_function_attributes,
 };
 
@@ -4040,6 +4087,12 @@ list_exit:
 	 */
 	if (cdev->config)
 		prev_configured = true;
+
+#ifdef CONFIG_LGE_USB_G_NCM
+	if (value < 0)
+		value = ncm_ctrlrequest(cdev, c);
+#endif
+
 	/* Special case the accessory function.
 	 * It needs to handle control requests before it is enabled.
 	 */

@@ -459,6 +459,16 @@ config LGE_USB_G_MULTIPLE_CONFIGURATION
 
 	default n
 
+config LGE_USB_G_NCM
+	boolean "LGE specific mirror link support in LGE Android"
+	depends on LGE_USB_G_ANDROID
+	help
+	 It supports LGE specific mirror link feature.
+
+	 Say y if this must be needed.
+
+	default n
+
 config LGE_USB_TYPE_C
 	bool "USB Type-C support"
 	help
