@@ -35,6 +35,13 @@
 #include <linux/qcom/diag_dload.h>
 
 #include "gadget_chips.h"
+#ifdef CONFIG_LGE_USB_FACTORY
+#include <linux/platform_data/lge_android_usb.h>
+#include <soc/qcom/lge/board_lge.h>
+#include <linux/reboot.h>
+#include <soc/qcom/restart.h>
+#include <soc/qcom/lge/lge_cable_detection.h>
+#endif
 
 #include "u_fs.h"
 #include "u_ecm.h"
@@ -233,6 +240,10 @@ struct android_dev {
 
 	/* A list node inside the android_dev_list */
 	struct list_head list_item;
+#ifdef CONFIG_LGE_USB_FACTORY
+	bool check_pif;
+	bool check_qem;
+#endif
 #ifdef CONFIG_LGE_USB_G_ANDROID
 	bool check_charge_only;
 	bool ffs_binding_fail;
@@ -261,6 +272,13 @@ static struct android_configuration *alloc_android_config
 						(struct android_dev *dev);
 static void free_android_config(struct android_dev *dev,
 				struct android_configuration *conf);
+#ifdef CONFIG_LGE_USB_FACTORY
+#define LGE_PIF_VID 0x1004
+#define LGE_PIF_PID 0x6000
+#define LGE_PIF_SN 0
+
+static void android_lge_factory_bind(struct usb_composite_dev *cdev);
+#endif
 
 /* string IDs are assigned dynamically */
 #define STRING_MANUFACTURER_IDX		0
@@ -602,6 +620,13 @@ static void android_disable(struct android_dev *dev)
 {
 	struct usb_composite_dev *cdev = dev->cdev;
 	struct android_configuration *conf;
+
+#ifdef CONFIG_LGE_USB_FACTORY
+	if (dev->check_pif) {
+		pr_info("%s: pif cable is plugged, not permitted\n", __func__);
+		return;
+	}
+#endif
 
 #ifdef CONFIG_LGE_USB_G_ANDROID
 	pr_info("%s: checked disable_depth(%d)\n", __func__, dev->disable_depth);
@@ -1752,6 +1777,14 @@ static ssize_t clients_store(
 		struct device *device, struct device_attribute *attr,
 		const char *buff, size_t size)
 {
+#ifdef CONFIG_LGE_USB_FACTORY
+	struct android_dev *dev = list_entry(android_dev_list.prev,
+			struct android_dev, list_item);
+	if (dev->check_pif) {
+		pr_info("%s: pif cable is plugged, not permitted\n", __func__);
+		return -EPERM;
+	}
+#endif
 	strlcpy(diag_clients, buff, sizeof(diag_clients));
 
 	return size;
@@ -3586,6 +3619,13 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 #ifdef CONFIG_LGE_USB_G_ANDROID
 	dev_info(dev->dev, "LGE-USB request function list: %s\n", buff);
 #endif
+#ifdef CONFIG_LGE_USB_FACTORY
+	if (dev->check_pif) {
+		pr_info("%s: pif cable is plugged, not permitted\n", __func__);
+		mutex_unlock(&dev->mutex);
+		return -EPERM;
+	}
+#endif
 
 	/* Clear previous enabled list */
 	list_for_each_entry(conf, &dev->configs, list_item) {
@@ -3704,6 +3744,23 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 	dev_info(dev->dev, "gadget enable(%s)\n", buff);
 #endif
 
+#ifdef CONFIG_LGE_USB_FACTORY
+	if (sscanf(buff, "%d", &enabled) != 1)
+		return -EINVAL;
+	if (dev->check_pif) {
+		if (enabled && !dev->enabled) {
+			android_enable(dev);
+			dev->enabled = true;
+			mutex_unlock(&dev->mutex);
+			pr_info("%s: pif cable is plugged, enable\n", __func__);
+			return size;
+		}
+		mutex_unlock(&dev->mutex);
+		pr_info("%s: pif cable is plugged, not permitted\n", __func__);
+		return -EPERM;
+	}
+#endif
+
 	sscanf(buff, "%d", &enabled);
 	if (enabled && !dev->enabled) {
 		/*
@@ -3727,6 +3784,13 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 				strings_dev[STRING_SERIAL_IDX].id;
 			cdev->desc.iProduct =
 				strings_dev[STRING_PRODUCT_IDX].id;
+		}
+#endif
+#ifdef CONFIG_LGE_USB_FACTORY
+		if (cdev->desc.idVendor == LGE_PIF_VID &&
+				cdev->desc.idProduct == LGE_PIF_PID) {
+
+			cdev->desc.iSerialNumber = 0;
 		}
 #endif
 
@@ -3826,6 +3890,29 @@ out:
 	return snprintf(buf, PAGE_SIZE, "%s\n", state);
 }
 
+#ifdef CONFIG_LGE_USB_FACTORY
+static ssize_t lock_show(struct device *pdev,
+			struct device_attribute *attr, char *buf)
+{
+	struct android_dev *dev = dev_get_drvdata(pdev);
+	return snprintf(buf, PAGE_SIZE, "%d\n", dev->check_pif);
+}
+
+static ssize_t lock_store(struct device *pdev,
+		struct device_attribute *attr, const char *buff, size_t size)
+{
+	struct android_dev *dev = dev_get_drvdata(pdev);
+	int lock = 0;
+
+	mutex_lock(&dev->mutex);
+	if (sscanf(buff, "%d", &lock) == 1)
+		dev->check_pif = lock;
+	mutex_unlock(&dev->mutex);
+
+	return size;
+}
+#endif
+
 #ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
 static ssize_t config_num_show(struct device *pdev,
 		struct device_attribute *attr,
@@ -3866,6 +3953,54 @@ field ## _store(struct device *pdev, struct device_attribute *attr,	\
 }									\
 static DEVICE_ATTR(field, S_IRUGO | S_IWUSR, field ## _show, field ## _store);
 
+#ifdef CONFIG_LGE_USB_FACTORY
+/* if pif cable is plugged, not allow request from user space */
+#define DESCRIPTOR_ATTR(field, format_string)				\
+static ssize_t								\
+field ## _show(struct device *dev, struct device_attribute *attr,	\
+		char *buf)						\
+{									\
+	return snprintf(buf, PAGE_SIZE,					\
+			format_string, device_desc.field);		\
+}									\
+static ssize_t								\
+field ## _store(struct device *dev, struct device_attribute *attr,	\
+		const char *buf, size_t size)				\
+{									\
+	int value;							\
+	struct android_dev *adev = dev_get_drvdata(dev);		\
+	if (adev->check_pif)						\
+		return -EPERM;						\
+	if (sscanf(buf, format_string, &value) == 1) {			\
+		device_desc.field = value;				\
+		return size;						\
+	}								\
+	return -EINVAL;							\
+}									\
+static DEVICE_ATTR(field, S_IRUGO | S_IWUSR, field ## _show, field ## _store);
+
+#define DESCRIPTOR_STRING_ATTR(field, buffer)				\
+static ssize_t								\
+field ## _show(struct device *dev, struct device_attribute *attr,	\
+		char *buf)						\
+{									\
+	return snprintf(buf, PAGE_SIZE, "%s", buffer);			\
+}									\
+static ssize_t								\
+field ## _store(struct device *dev, struct device_attribute *attr,	\
+		const char *buf, size_t size)				\
+{									\
+	struct android_dev *adev = dev_get_drvdata(dev);		\
+	if (adev->check_pif && adev->check_qem)				\
+		return -EPERM;						\
+	if (size >= sizeof(buffer))					\
+		return -EINVAL;						\
+	strlcpy(buffer, buf, sizeof(buffer));				\
+	strim(buffer);							\
+	return size;							\
+}									\
+static DEVICE_ATTR(field, S_IRUGO | S_IWUSR, field ## _show, field ## _store);
+#else /* CONFIG_LGE_USB_FACTORY */
 #define DESCRIPTOR_ATTR(field, format_string)				\
 static ssize_t								\
 field ## _show(struct device *dev, struct device_attribute *attr,	\
@@ -3905,6 +4040,7 @@ field ## _store(struct device *dev, struct device_attribute *attr,	\
 	return size;							\
 }									\
 static DEVICE_ATTR(field, S_IRUGO | S_IWUSR, field ## _show, field ## _store);
+#endif /* CONFIG_LGE_USB_FACTORY */
 
 
 DESCRIPTOR_ATTR(idVendor, "%04x\n")
@@ -3932,6 +4068,10 @@ ANDROID_DEV_ATTR(idle_pc_rpm_no_int_secs, "%u\n");
 static DEVICE_ATTR(state, S_IRUGO, state_show, NULL);
 static DEVICE_ATTR(remote_wakeup, S_IRUGO | S_IWUSR,
 		remote_wakeup_show, remote_wakeup_store);
+#ifdef CONFIG_LGE_USB_FACTORY
+static DEVICE_ATTR(lock, S_IRUGO | S_IWUSR, lock_show, lock_store);
+#endif
+
 #ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
 static DEVICE_ATTR(config_num, S_IRUGO, config_num_show, NULL);
 #endif
@@ -3957,6 +4097,9 @@ static struct device_attribute *android_usb_attributes[] = {
 	&dev_attr_pm_qos_state,
 	&dev_attr_state,
 	&dev_attr_remote_wakeup,
+#ifdef CONFIG_LGE_USB_FACTORY
+	&dev_attr_lock,
+#endif
 #ifdef CONFIG_LGE_USB_G_MULTIPLE_CONFIGURATION
 	&dev_attr_config_num,
 #endif
@@ -3969,6 +4112,101 @@ static struct device_attribute *android_usb_attributes[] = {
 
 /*-------------------------------------------------------------------------*/
 /* Composite driver */
+
+#ifdef CONFIG_LGE_USB_FACTORY
+static void android_lge_factory_bind(struct usb_composite_dev *cdev)
+{
+	struct android_dev *dev = cdev_to_android_dev(cdev);
+	struct list_head *curr_conf = &dev->configs;
+	struct android_configuration *conf;
+	struct android_usb_function_holder *f_holder;
+	char lge_factory_composition[256];
+	char *conf_str;
+	char *name, *b;
+	int ret, err, value;
+
+	/* update values in composite driver's copy of device descriptor */
+	value = lgeusb_get_vendor_id();
+	if (value < 0)
+		value = LGE_PIF_VID;
+	device_desc.idVendor = value;
+
+	value = lgeusb_get_factory_pid();
+	if (value < 0)
+		value = LGE_PIF_PID;
+	device_desc.idProduct = value;
+
+	value = lgeusb_get_serial_number();
+	if (value < 0)
+		value = LGE_PIF_SN;
+	device_desc.iSerialNumber = value;
+
+	/*XXX: should we create sysfs with below 3 field? */
+	device_desc.bDeviceClass = 2;
+	device_desc.bDeviceSubClass = 0;
+	device_desc.bDeviceProtocol = 0;
+
+	cdev->desc.idVendor = device_desc.idVendor;
+	cdev->desc.idProduct = device_desc.idProduct;
+	cdev->desc.bcdDevice = device_desc.bcdDevice;
+	cdev->desc.bDeviceClass = device_desc.bDeviceClass;
+	cdev->desc.bDeviceSubClass = device_desc.bDeviceSubClass;
+	cdev->desc.bDeviceProtocol = device_desc.bDeviceProtocol;
+
+	/*XXX: modem & diag specific configuration */
+	strlcpy(acm_transports, "tty", sizeof(acm_transports));
+	strlcpy(diag_clients, "diag", sizeof(diag_clients));
+
+	/* Clear previous enabled list */
+	list_for_each_entry(conf, &dev->configs, list_item) {
+		while (conf->enabled_functions.next !=
+				&conf->enabled_functions) {
+			f_holder = list_entry(conf->enabled_functions.next,
+					typeof(*f_holder),
+					enabled_list);
+			f_holder->f->android_dev = NULL;
+			list_del(&f_holder->enabled_list);
+			kfree(f_holder);
+		}
+		INIT_LIST_HEAD(&conf->enabled_functions);
+	}
+
+	ret = lgeusb_get_factory_composition(lge_factory_composition);
+	if (ret)
+		strlcpy(lge_factory_composition, "acm,diag",
+				sizeof(lge_factory_composition) - 1);
+	if (lge_get_laf_mode()) {
+		strlcpy(lge_factory_composition, "acm,laf",
+				sizeof(lge_factory_composition) - 1);
+	}
+
+	b = strim(lge_factory_composition);
+	while (b) {
+		conf_str = strsep(&b, ":");
+		if (conf_str) {
+			/* If the next not equal to the head, take it */
+			if (curr_conf->next != &dev->configs)
+				conf = list_entry(curr_conf->next,
+						struct android_configuration,
+						list_item);
+			else
+				conf = alloc_android_config(dev);
+
+			curr_conf = curr_conf->next;
+		}
+
+		while (conf_str) {
+			name = strsep(&conf_str, ",");
+			if (name) {
+				err = android_enable_function(dev, conf, name);
+				if (err)
+					pr_err("android_usb: Cannot enable %s",
+							name);
+			}
+		}
+	}
+}
+#endif /* CONFIG_LGE_USB_FACTORY */
 
 static int android_bind_config(struct usb_configuration *c)
 {
@@ -4075,6 +4313,15 @@ static int android_bind(struct usb_composite_dev *cdev)
 	strlcpy(charge_only_string, "USB Charge Only Interface",
 			sizeof(charge_only_string) - 1);
 #endif
+
+#ifdef CONFIG_LGE_USB_FACTORY
+	if (dev->check_pif) {
+		pr_info("%s: pif cable is plugged, bind factory composition\n",
+						 __func__);
+		android_lge_factory_bind(cdev);
+	}
+#endif
+
 	return 0;
 }
 
@@ -4491,6 +4738,23 @@ static int android_probe(struct platform_device *pdev)
 	INIT_WORK(&android_dev->work, android_work);
 	INIT_DELAYED_WORK(&android_dev->pm_qos_work, android_pm_qos_work);
 	mutex_init(&android_dev->mutex);
+
+#ifdef CONFIG_LGE_USB_FACTORY
+	if (lgeusb_get_factory_cable()) {
+		android_dev->check_pif = true;
+
+		switch (lge_get_boot_mode()) {
+		case LGE_BOOT_MODE_QEM_56K:
+		case LGE_BOOT_MODE_QEM_130K:
+		case LGE_BOOT_MODE_QEM_910K:
+			android_dev->check_qem = true;
+			break;
+
+		default:
+			break;
+		}
+	}
+#endif
 
 	android_dev->pdata = pdata;
 
