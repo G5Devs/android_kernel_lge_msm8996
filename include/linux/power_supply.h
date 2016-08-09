@@ -230,6 +230,9 @@ enum power_supply_property {
 #ifdef CONFIG_LGE_USB_TYPE_C
 	POWER_SUPPLY_PROP_DP_ALT_MODE,
 #endif
+#ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
+	POWER_SUPPLY_PROP_APSD_RERUN_NEED,
+#endif
 #ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
 	POWER_SUPPLY_PROP_USB_NON_DRIVE,
 #endif
@@ -240,6 +243,9 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_MANUFACTURER,
 	POWER_SUPPLY_PROP_SERIAL_NUMBER,
 	POWER_SUPPLY_PROP_BATTERY_TYPE,
+#if defined(CONFIG_LGE_USB_FLOATED_CHARGER_DETECT) && defined(CONFIG_LGE_USB_TYPE_C)
+	POWER_SUPPLY_PROP_CTYPE_CHARGER,
+#endif
 };
 
 enum power_supply_type {
@@ -330,6 +336,9 @@ struct power_supply {
 	char *online_trig_name;
 	struct led_trigger *charging_blink_full_solid_trig;
 	char *charging_blink_full_solid_trig_name;
+#endif
+#ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
+	int is_floated_charger;
 #endif
 };
 

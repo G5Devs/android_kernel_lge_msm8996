@@ -4321,6 +4321,49 @@ static void check_battery_type(struct smbchg_chip *chip)
 	}
 }
 
+#ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
+static void smbchg_rerun_apsd(struct smbchg_chip *chip)
+{
+	int rc, count;
+	enum power_supply_type usb_supply_type;
+	char *usb_type_name = "null";
+
+	pr_smb(PR_MISC, "Disable AICL\n");
+	smbchg_sec_masked_write(chip, chip->usb_chgpth_base + USB_AICL_CFG,
+			AICL_EN_BIT, 0);
+
+	/*  0xF1: USBIN_CHGR_CFG
+	 *  0x3 : USBIN_ADAPTER_9V */
+	rc = smbchg_sec_masked_write(chip,
+			chip->usb_chgpth_base + 0xF1, 0xFF, 0x3);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't write usb allowance rc=%d\n", rc);
+		return;
+	}
+
+    /* allow 5 to 9V chargers
+	 * 0xF1: USBIN_CHGR_CFG
+	 * 0x07: ADAPTER_ALLOWANCE_MASK
+	 * 0x02: USBIN_ADAPTER_5V_9V_CONT */
+	rc = smbchg_sec_masked_write(chip,
+			chip->usb_chgpth_base + 0xF1, 0x7, 0x2);
+	if (rc < 0)
+		pr_err("Couldn't write usb allowance rc=%d\n", rc);
+
+	pr_smb(PR_MISC, "Enable AICL\n");
+	smbchg_sec_masked_write(chip, chip->usb_chgpth_base + USB_AICL_CFG,
+			AICL_EN_BIT, AICL_EN_BIT);
+
+	for (count = 0; count < 10; count++) {
+		read_usb_type(chip, &usb_type_name, &usb_supply_type);
+		if (usb_supply_type != POWER_SUPPLY_TYPE_UNKNOWN) {
+			break;
+		}
+		msleep(100);
+	}
+}
+#endif
+
 #ifdef CONFIG_LGE_USB_TYPE_C
 static void smbchg_usb_pd_en(struct smbchg_chip *chip)
 {
@@ -4508,6 +4551,45 @@ static void smbchg_external_power_changed(struct power_supply *psy)
 	read_usb_type(chip, &usb_type_name, &usb_supply_type);
 	if (usb_supply_type != POWER_SUPPLY_TYPE_USB)
 		goto  skip_current_for_non_sdp;
+
+#ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
+	if (lge_get_boot_mode() != LGE_BOOT_MODE_CHARGERLOGO) {
+		if (usb_supply_type == POWER_SUPPLY_TYPE_USB) {
+			chip->usb_psy->get_property(chip->usb_psy,
+					POWER_SUPPLY_PROP_APSD_RERUN_NEED, &prop);
+			if (prop.intval == 1) {
+				pr_smb(PR_LGE, "rerun apsd\n");
+				prop.intval = 0;
+				chip->usb_psy->set_property(chip->usb_psy,
+						POWER_SUPPLY_PROP_APSD_RERUN_NEED, &prop);
+				smbchg_rerun_apsd(chip);
+				goto skip_current_for_non_sdp;
+			}
+		}
+	} else {
+		if (usb_supply_type == POWER_SUPPLY_TYPE_USB) {
+			chip->usb_psy->get_property(chip->usb_psy,
+					POWER_SUPPLY_PROP_APSD_RERUN_NEED,
+					&prop);
+			if (prop.intval == 1) {
+				pr_smb(PR_LGE, "set HC mode\n");
+				rc = smbchg_masked_write(chip,
+						chip->usb_chgpth_base + CMD_IL,
+						ICL_OVERRIDE_BIT,
+						ICL_OVERRIDE_BIT);
+				if (rc < 0)
+					pr_err("Couldn't set override rc = %d\n", rc);
+
+				rc = smbchg_masked_write(chip,
+						chip->usb_chgpth_base + CMD_IL,
+						USBIN_MODE_CHG_BIT,
+						USBIN_HC_MODE);
+				if (rc < 0)
+					dev_err(chip->dev, "Couldn't write cfg 5 rc = %d\n", rc);
+			}
+		}
+	}
+#endif
 
 	pr_smb(PR_MISC, "usb type = %s current_limit = %d\n",
 			usb_type_name, current_limit);
