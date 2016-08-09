@@ -191,7 +191,9 @@ struct dwc3_msm {
 	struct dbm		*dbm;
 
 	/* VBUS regulator for host mode */
+#ifndef CONFIG_LGE_USB_TYPE_C
 	struct regulator	*vbus_reg;
+#endif
 	int			vbus_retry_count;
 	bool			resume_pending;
 	atomic_t                pm_suspended;
@@ -223,6 +225,10 @@ struct dwc3_msm {
 	unsigned int		health_status;
 	unsigned int		tx_fifo_size;
 	bool			vbus_active;
+#ifdef CONFIG_LGE_USB_TYPE_C
+	bool			vbus_active_pending;
+	unsigned int		dp_dm;
+#endif
 	bool			suspend;
 	bool			ext_inuse;
 	bool			disable_host_mode_pm;
@@ -1896,6 +1902,12 @@ static int dwc3_msm_power_get_property_usb(struct power_supply *psy,
 		val->intval = get_prop_usbin_voltage_now(mdwc);
 		break;
 #endif
+#ifdef CONFIG_LGE_USB_TYPE_C
+	case POWER_SUPPLY_PROP_DP_DM:
+		val->intval = mdwc->dp_dm;
+		break;
+#endif
+
 	default:
 		return -EINVAL;
 	}
@@ -1920,10 +1932,21 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 		break;
 	/* PMIC notification for DP_DM state */
 	case POWER_SUPPLY_PROP_DP_DM:
+#ifdef CONFIG_LGE_USB_TYPE_C
+		mdwc->dp_dm = val->intval;
+#endif
 		usb_phy_change_dpdm(mdwc->hs_phy, val->intval);
 		break;
 	/* Process PMIC notification in PRESENT prop */
 	case POWER_SUPPLY_PROP_PRESENT:
+#ifdef CONFIG_LGE_USB_TYPE_C
+		if (val->intval && psy->type == POWER_SUPPLY_TYPE_UNKNOWN) {
+			mdwc->vbus_active_pending = true;
+			break;
+		} else {
+			mdwc->vbus_active_pending = false;
+		}
+#endif
 		dev_dbg(mdwc->dev, "%s: notify xceiv event with val:%d\n",
 							__func__, val->intval);
 		/*
@@ -1990,6 +2013,11 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 
 		dev_dbg(mdwc->dev, "%s: charger type: %s\n", __func__,
 				chg_to_string(mdwc->chg_type));
+#ifdef CONFIG_LGE_USB_TYPE_C
+		if (mdwc->vbus_active_pending &&
+		    mdwc->chg_type != DWC3_INVALID_CHARGER)
+			power_supply_set_present(psy, true);
+#endif
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
 		mdwc->health_status = val->intval;
@@ -2672,8 +2700,10 @@ static int dwc3_msm_remove(struct platform_device *pdev)
 	if (mdwc->bus_perf_client)
 		msm_bus_scale_unregister_client(mdwc->bus_perf_client);
 
+#ifndef CONFIG_LGE_USB_TYPE_C
 	if (!IS_ERR_OR_NULL(mdwc->vbus_reg))
 		regulator_disable(mdwc->vbus_reg);
+#endif
 
 	if (mdwc->hs_phy_irq)
 		disable_irq(mdwc->hs_phy_irq);
@@ -2716,6 +2746,7 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 	if (!dwc->xhci)
 		return -EINVAL;
 
+#ifndef CONFIG_LGE_USB_TYPE_C
 	if (!mdwc->vbus_reg) {
 		mdwc->vbus_reg = devm_regulator_get(mdwc->dev, "vbus_dwc3");
 		if (IS_ERR(mdwc->vbus_reg)) {
@@ -2725,6 +2756,7 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 			return ret;
 		}
 	}
+#endif
 
 	if (on) {
 		dev_dbg(mdwc->dev, "%s: turn on host\n", __func__);
@@ -2733,6 +2765,7 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 		dbg_event(0xFF, "StrtHost gync",
 			atomic_read(&dwc->dev->power.usage_count));
 		usb_phy_notify_connect(mdwc->hs_phy, USB_SPEED_HIGH);
+#ifndef CONFIG_LGE_USB_TYPE_C
 		ret = regulator_enable(mdwc->vbus_reg);
 		if (ret) {
 			dev_err(dwc->dev, "unable to enable vbus_reg\n");
@@ -2741,6 +2774,7 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 				atomic_read(&dwc->dev->power.usage_count));
 			return ret;
 		}
+#endif
 
 		dwc3_set_mode(dwc, DWC3_GCTL_PRTCAP_HOST);
 
@@ -2757,7 +2791,10 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 			dev_err(mdwc->dev,
 				"%s: failed to add XHCI pdev ret=%d\n",
 				__func__, ret);
+#ifndef CONFIG_LGE_USB_TYPE_C
 			regulator_disable(mdwc->vbus_reg);
+#endif
+
 			pm_runtime_put_sync(dwc->dev);
 			dbg_event(0xFF, "pdeverr psync",
 				atomic_read(&dwc->dev->power.usage_count));
@@ -2783,11 +2820,13 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 	} else {
 		dev_dbg(dwc->dev, "%s: turn off host\n", __func__);
 
+#ifndef CONFIG_LGE_USB_TYPE_C
 		ret = regulator_disable(mdwc->vbus_reg);
 		if (ret) {
 			dev_err(dwc->dev, "unable to disable vbus_reg\n");
 			return ret;
 		}
+#endif
 
 		pm_runtime_get_sync(dwc->dev);
 		dbg_event(0xFF, "StopHost gsync",

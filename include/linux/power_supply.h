@@ -227,6 +227,9 @@ enum power_supply_property {
 #ifdef CONFIG_LGE_PM_CHARGERLOGO_WAIT_FOR_FG_INIT
 	POWER_SUPPLY_PROP_FIRST_SOC_EST_DONE,
 #endif
+#ifdef CONFIG_LGE_USB_TYPE_C
+	POWER_SUPPLY_PROP_DP_ALT_MODE,
+#endif
 #ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
 	POWER_SUPPLY_PROP_USB_NON_DRIVE,
 #endif
@@ -254,6 +257,10 @@ enum power_supply_type {
 	POWER_SUPPLY_TYPE_BMS,		/* Battery Monitor System */
 	POWER_SUPPLY_TYPE_USB_PARALLEL,		/* USB Parallel Path */
 	POWER_SUPPLY_TYPE_WIPOWER,		/* Wipower */
+#ifdef CONFIG_LGE_USB_TYPE_C
+	POWER_SUPPLY_TYPE_CTYPE,	/* USB Type-C Charger based on CC controller */
+	POWER_SUPPLY_TYPE_CTYPE_PD, 	/* USB Type-C Charger based on PD Message */
+#endif
 };
 
 enum power_supply_notifier_events {

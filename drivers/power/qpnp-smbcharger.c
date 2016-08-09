@@ -210,6 +210,9 @@ struct smbchg_chip {
 	int                             is_evp_ta;
 	struct delayed_work             enable_evp_chg_work;
 #endif
+#ifdef CONFIG_LGE_USB_TYPE_C
+	bool				dp_alt_mode;
+#endif
 #ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
 	struct wake_lock		chg_wake_lock;
 	bool				wake_lock_flag;
@@ -307,6 +310,9 @@ struct smbchg_chip {
 	struct power_supply		batt_psy;
 	struct power_supply		dc_psy;
 	struct power_supply		*bms_psy;
+#ifdef CONFIG_LGE_USB_TYPE_C
+	struct power_supply		*ctype_psy;
+#endif
 #ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
 	struct power_supply		*lgcc_psy;
 #endif
@@ -1142,6 +1148,9 @@ static bool is_otg_present_schg(struct smbchg_chip *chip)
 	u8 reg;
 	u8 usbid_reg[2];
 	u16 usbid_val;
+#ifdef CONFIG_LGE_USB_TYPE_C
+	union power_supply_propval prop;
+#endif
 	/*
 	 * After the falling edge of the usbid change interrupt occurs,
 	 * there may still be some time before the ADC conversion for USB RID
@@ -1154,6 +1163,16 @@ static bool is_otg_present_schg(struct smbchg_chip *chip)
 	 */
 
 	msleep(20);
+
+#ifdef CONFIG_LGE_USB_TYPE_C
+	rc = chip->usb_psy->get_property(chip->usb_psy,
+				POWER_SUPPLY_PROP_USB_OTG, &prop);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't read USB_OTG state rc = %d\n", rc);
+		return false;
+	}
+	return prop.intval ? true : false;
+#endif
 
 	/*
 	 * There is a problem with USBID conversions on PMI8994 revisions
@@ -1322,6 +1341,31 @@ static void read_usb_type(struct smbchg_chip *chip, char **usb_type_name,
 	*usb_type_name = get_usb_type_name(type);
 	*usb_supply_type = get_usb_supply_type(type);
 }
+
+#ifdef CONFIG_LGE_USB_TYPE_C
+static enum power_supply_type get_usb_pd_supply_type(struct smbchg_chip *chip)
+{
+   union power_supply_propval pval = {0, };
+   int rc;
+
+   if (!chip->ctype_psy) {
+       chip->ctype_psy = power_supply_get_by_name("USB_PD");
+       if (IS_ERR(chip->ctype_psy))
+           chip->ctype_psy = 0;
+   }
+   if (chip->ctype_psy) {
+       rc = chip->ctype_psy->get_property(chip->ctype_psy,
+               POWER_SUPPLY_PROP_TYPE, &pval);
+   }
+
+   if (rc) {
+       pr_err("Couldn't get usb pd type = %d\n", rc);
+       return POWER_SUPPLY_TYPE_UNKNOWN;
+   } else {
+       return pval.intval;
+   }
+}
+#endif
 
 #define CHGR_STS			0x0E
 #define BATT_LESS_THAN_2V		BIT(4)
@@ -2838,6 +2882,10 @@ static bool smbchg_is_parallel_usb_ok(struct smbchg_chip *chip,
 	int fcc_ma = get_effective_result_locked(chip->fcc_votable);
 	int fcc_voter_id = get_effective_client_id_locked(chip->fcc_votable);
 	int usb_icl_ma = get_effective_result_locked(chip->usb_icl_votable);
+#ifdef CONFIG_LGE_USB_TYPE_C
+	int c_type;
+	c_type = get_usb_pd_supply_type(chip);
+#endif
 
 	if (!parallel_psy || !smbchg_parallel_en
 			|| !chip->parallel_charger_detected) {
@@ -2895,7 +2943,12 @@ static bool smbchg_is_parallel_usb_ok(struct smbchg_chip *chip,
 		return false;
 	}
 
+#ifdef CONFIG_LGE_USB_TYPE_C
+	if ((get_usb_supply_type(type) == POWER_SUPPLY_TYPE_USB) &&
+			 (c_type != POWER_SUPPLY_TYPE_CTYPE_PD)) {
+#else
 	if (get_usb_supply_type(type) == POWER_SUPPLY_TYPE_USB) {
+#endif
 		pr_smb(PR_STATUS, "SDP adapter, skipping\n");
 		return false;
 	}
@@ -4268,6 +4321,62 @@ static void check_battery_type(struct smbchg_chip *chip)
 	}
 }
 
+#ifdef CONFIG_LGE_USB_TYPE_C
+static void smbchg_usb_pd_en(struct smbchg_chip *chip)
+{
+	union power_supply_propval prop = {0, };
+	enum power_supply_type usb_supply_type;
+	char *usb_type_name = "null";
+	int c_type, c_mv, c_ma, target_icl_ma;
+	int rc;
+
+	c_type = get_usb_pd_supply_type(chip);
+
+	if (c_type == POWER_SUPPLY_TYPE_CTYPE ||
+			c_type == POWER_SUPPLY_TYPE_CTYPE_PD) {
+		rc = chip->ctype_psy->get_property(chip->ctype_psy,
+				POWER_SUPPLY_PROP_VOLTAGE_MAX, &prop);
+		c_mv = prop.intval;
+
+		rc = chip->ctype_psy->get_property(chip->ctype_psy,
+				POWER_SUPPLY_PROP_CURRENT_MAX, &prop);
+		c_ma = prop.intval;
+
+		target_icl_ma = get_effective_result_locked(chip->usb_icl_votable);
+
+		if (c_ma == 0 || c_ma == target_icl_ma) {
+			pr_smb(PR_MISC, "skip current setting for C Type\n");
+		} else {
+			pr_smb(PR_LGE, "Type[%d], c_mV[%d], c_mA[%d], "
+					"target_icl_mA[%d]\n", c_type, c_mv, c_ma, target_icl_ma);
+			smbchg_parallel_usb_disable(chip);
+
+			read_usb_type(chip, &usb_type_name, &usb_supply_type);
+			if (usb_supply_type == POWER_SUPPLY_TYPE_USB) {
+				pr_smb(PR_LGE, "set HC mode\n");
+				rc = smbchg_masked_write(chip,
+						chip->usb_chgpth_base + CMD_IL,
+						ICL_OVERRIDE_BIT,
+						ICL_OVERRIDE_BIT);
+				if (rc < 0)
+					pr_err("Couldn't set override rc = %d\n", rc);
+
+				rc = smbchg_masked_write(chip,
+						chip->usb_chgpth_base + CMD_IL,
+						USBIN_MODE_CHG_BIT,
+						USBIN_HC_MODE);
+				if (rc < 0)
+					dev_err(chip->dev, "Couldn't write cfg 5 rc = %d\n", rc);
+			}
+			rc = vote(chip->usb_icl_votable, PSY_ICL_VOTER, true, c_ma);
+			if (rc < 0)
+				pr_smb(PR_LGE, "Couldn't vote for "
+						"new USB ICL rc=%d\n", rc);
+		}
+	}
+}
+#endif
+
 #ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
 #define HVDCP_UV_MV        5500
 
@@ -4329,6 +4438,17 @@ static void smbchg_external_power_changed(struct power_supply *psy)
 	int rc, current_limit = 0, soc;
 	enum power_supply_type usb_supply_type;
 	char *usb_type_name = "null";
+#ifdef CONFIG_LGE_USB_TYPE_C
+	int c_type = 0;
+
+	c_type = get_usb_pd_supply_type(chip);
+
+	if (c_type == POWER_SUPPLY_TYPE_CTYPE ||
+		c_type == POWER_SUPPLY_TYPE_CTYPE_PD) {
+		smbchg_usb_pd_en(chip);
+		goto skip_current_for_non_sdp;
+	}
+#endif
 
 	if (chip->bms_psy_name)
 		chip->bms_psy =
@@ -5602,7 +5722,22 @@ static void handle_usb_removal(struct smbchg_chip *chip)
 	if (!chip->skip_usb_notification) {
 		pr_smb(PR_MISC, "setting usb psy present = %d\n",
 				chip->usb_present);
+#ifdef CONFIG_LGE_USB_TYPE_C
+		if (!chip->ctype_psy) {
+			chip->ctype_psy = power_supply_get_by_name("USB_PD");
+			if (IS_ERR(chip->ctype_psy))
+				chip->ctype_psy = 0;
+		}
+		if (!chip->ctype_psy) {
+			power_supply_set_present(chip->usb_psy, chip->usb_present);
+		} else {
+			power_supply_set_supply_type(chip->ctype_psy,
+					POWER_SUPPLY_TYPE_UNKNOWN);
+			power_supply_set_present(chip->ctype_psy, 0);
+		}
+#else
 		power_supply_set_present(chip->usb_psy, chip->usb_present);
+#endif
 	}
 	set_usb_psy_dp_dm(chip, POWER_SUPPLY_DP_DM_DPR_DMR);
 	schedule_work(&chip->usb_set_online_work);
@@ -5726,7 +5861,20 @@ static void handle_usb_insertion(struct smbchg_chip *chip)
 	if (!chip->skip_usb_notification) {
 		pr_smb(PR_MISC, "setting usb psy present = %d\n",
 				chip->usb_present);
+#ifdef CONFIG_LGE_USB_TYPE_C
+		if (!chip->ctype_psy) {
+			chip->ctype_psy = power_supply_get_by_name("USB_PD");
+			if (IS_ERR(chip->ctype_psy))
+				chip->ctype_psy = 0;
+		}
+		if (!chip->ctype_psy) {
+			power_supply_set_present(chip->usb_psy, chip->usb_present);
+		} else {
+			power_supply_set_present(chip->ctype_psy, 1);
+		}
+#else
 		power_supply_set_present(chip->usb_psy, chip->usb_present);
+#endif
 	}
 
 	/* Notify the USB psy if OV condition is not present */
@@ -6840,6 +6988,12 @@ static int smbchg_battery_set_property(struct power_supply *psy,
 		schedule_delayed_work(&chip->enable_evp_chg_work, 0);
 		break;
 #endif
+#ifdef CONFIG_LGE_USB_TYPE_C
+	case POWER_SUPPLY_PROP_DP_ALT_MODE:
+		chip->dp_alt_mode = val->intval;
+		pr_smb(PR_LGE, "dp_alt_mode = %d\n", chip->dp_alt_mode);
+		break;
+#endif
 #ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
 	case POWER_SUPPLY_PROP_CTYPE_CHARGER:
 		chip->hvdcp_mode = val->intval;
@@ -6871,6 +7025,9 @@ static int smbchg_battery_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_RESTRICTED_CHARGING:
 #ifdef CONFIG_LGE_PM_MAXIM_EVP_CONTROL
 	case POWER_SUPPLY_PROP_ENABLE_EVP_CHG:
+#endif
+#ifdef CONFIG_LGE_USB_TYPE_C
+	case POWER_SUPPLY_PROP_DP_ALT_MODE:
 #endif
 #ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
 	case POWER_SUPPLY_PROP_CTYPE_CHARGER:
@@ -6986,6 +7143,14 @@ static int smbchg_battery_get_property(struct power_supply *psy,
 #ifdef CONFIG_LGE_PM_MAXIM_EVP_CONTROL
 	case POWER_SUPPLY_PROP_ENABLE_EVP_CHG:
 		val->intval = chip->is_evp_ta;
+		break;
+#endif
+#ifdef CONFIG_LGE_USB_TYPE_C
+	case POWER_SUPPLY_PROP_DP_ALT_MODE:
+		val->intval = chip->dp_alt_mode;
+		break;
+	case POWER_SUPPLY_PROP_TYPE:
+		val->intval = chip->usb_supply_type;
 		break;
 #endif
 #ifdef CONFIG_LGE_PM_CHARGING_CONTROLLER
@@ -9416,7 +9581,17 @@ static int smbchg_probe(struct spmi_device *spmi)
 	if (!chip->skip_usb_notification) {
 		pr_smb(PR_MISC, "setting usb psy present = %d\n",
 			chip->usb_present);
+#ifdef CONFIG_LGE_USB_TYPE_C
+		if (!chip->ctype_psy) {
+			chip->ctype_psy = power_supply_get_by_name("USB_PD");
+			if (IS_ERR(chip->ctype_psy))
+				chip->ctype_psy = 0;
+		}
+		if (!chip->ctype_psy)
+			power_supply_set_present(chip->usb_psy, chip->usb_present);
+#else
 		power_supply_set_present(chip->usb_psy, chip->usb_present);
+#endif
 	}
 
 	rerun_hvdcp_det_if_necessary(chip);

@@ -439,4 +439,9 @@ source "drivers/usb/gadget/legacy/Kconfig"
 
 endchoice
 
+config LGE_USB_TYPE_C
+	bool "USB Type-C support"
+	help
+	  Say Y here to add support for USB Type-C.
+
 endif # USB_GADGET
