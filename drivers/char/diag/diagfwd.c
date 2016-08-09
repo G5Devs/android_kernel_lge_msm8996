@@ -48,6 +48,10 @@
 #define STM_RSP_STATUS_INDEX		8
 #define STM_RSP_NUM_BYTES		9
 
+#ifdef CONFIG_LGE_DM_APP
+#include "lg_dm_tty.h"
+#endif
+
 static int timestamp_switch;
 module_param(timestamp_switch, int, 0644);
 
@@ -282,6 +286,11 @@ static void pack_rsp_and_send(unsigned char *buf, int len)
 		 */
 		if (driver->logging_mode == DIAG_MEMORY_DEVICE_MODE)
 			chk_logging_wakeup();
+
+#ifdef CONFIG_LGE_DM_APP
+		if (driver->logging_mode == DM_APP_MODE)
+			chk_logging_wakeup();
+#endif
 	}
 	if (driver->rsp_buf_busy) {
 		pr_err("diag: unable to get hold of response buffer\n");
@@ -350,6 +359,11 @@ static void encode_rsp_and_send(unsigned char *buf, int len)
 		 */
 		if (driver->logging_mode == DIAG_MEMORY_DEVICE_MODE)
 			chk_logging_wakeup();
+
+#ifdef CONFIG_LGE_DM_APP
+		if (driver->logging_mode == DM_APP_MODE)
+			chk_logging_wakeup();
+#endif
 	}
 
 	if (driver->rsp_buf_busy) {
@@ -1273,7 +1287,12 @@ static int diagfwd_mux_close(int id, int mode)
 	}
 
 	if ((mode == DIAG_USB_MODE &&
+#ifndef CONFIG_LGE_DM_APP
 	     driver->logging_mode == DIAG_MEMORY_DEVICE_MODE) ||
+#else
+		(driver->logging_mode == DIAG_MEMORY_DEVICE_MODE ||
+		driver->logging_mode == DM_APP_MODE)) ||
+#endif
 	    (mode == DIAG_MEMORY_DEVICE_MODE &&
 	     driver->logging_mode == DIAG_USB_MODE)) {
 		/*
