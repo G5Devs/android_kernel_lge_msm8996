@@ -1234,6 +1234,9 @@ static void dwc3_restart_usb_work(struct work_struct *w)
 	}
 
 	dwc->err_evt_seen = false;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	mdwc->in_restart = false;
+#endif
 }
 
 /**
@@ -1528,6 +1531,9 @@ static void dwc3_msm_notify_event(struct dwc3 *dwc, unsigned event)
 		dev_dbg(mdwc->dev, "DWC3_CONTROLLER_NOTIFY_OTG_EVENT received\n");
 		if (dwc->enable_bus_suspend) {
 			mdwc->suspend = dwc->b_suspend;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+			cancel_delayed_work(&mdwc->resume_work);
+#endif
 			queue_delayed_work(mdwc->dwc3_wq,
 					&mdwc->resume_work, 0);
 		}
@@ -2025,6 +2031,10 @@ static int dwc3_msm_resume(struct dwc3_msm *mdwc)
  */
 static void dwc3_ext_event_notify(struct dwc3_msm *mdwc)
 {
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	pr_info("%s\n", __func__);
+#endif
+
 	/* Flush processing any pending events before handling new ones */
 	if (mdwc->init)
 		flush_delayed_work(&mdwc->sm_work);
@@ -2143,7 +2153,11 @@ static void dwc3_pwr_event_handler(struct dwc3_msm *mdwc)
 	/* Clear L2 exit */
 	if (irq_stat & PWR_EVNT_LPM_OUT_L2_MASK) {
 		irq_stat &= ~PWR_EVNT_LPM_OUT_L2_MASK;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+		irq_clear |= PWR_EVNT_LPM_OUT_L2_MASK;
+#else
 		irq_stat |= PWR_EVNT_LPM_OUT_L2_MASK;
+#endif
 	}
 
 	/* Handle exit from L1 events */
@@ -2348,8 +2362,21 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 		mdwc->id_state = val->intval ? DWC3_ID_GROUND : DWC3_ID_FLOAT;
 		dbg_event(0xFF, "id_state", mdwc->id_state);
 		if (dwc->is_drd && !mdwc->ext_inuse)
+#ifdef CONFIG_LGE_USB_G_ANDROID
+		{
+#ifdef CONFIG_LGE_USB_FLOATED_CHARGER_DETECT
+			pr_info("%s(): cancel floated_chg_hrtimer\n", __func__);
+			hrtimer_cancel(&mdwc->floated_chg_hrtimer);
+#endif
+			cancel_delayed_work(&mdwc->resume_work);
+			queue_delayed_work(mdwc->dwc3_wq,
+					&mdwc->resume_work, 12);
+		}
+#else
 			queue_delayed_work(mdwc->dwc3_wq,
 					&mdwc->resume_work, 0);
+#endif
+
 		break;
 	/* PMIC notification for DP_DM state */
 	case POWER_SUPPLY_PROP_DP_DM:
@@ -2368,8 +2395,14 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 			mdwc->vbus_active_pending = false;
 		}
 #endif
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+		dev_info(mdwc->dev, "%s: notify xceiv event with val:%d, vbus_active:%d\n",
+				__func__, val->intval, mdwc->vbus_active);
+#else
 		dev_dbg(mdwc->dev, "%s: notify xceiv event with val:%d\n",
 							__func__, val->intval);
+#endif
 #ifdef CONFIG_LGE_USB_MAXIM_EVP
 		atomic_set(&mdwc->evp_detecting, 0);
 #endif
@@ -2395,8 +2428,18 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 			 * charging CDP complaince test fails if delay > 120ms.
 			 */
 			dbg_event(0xFF, "Q RW (vbus)", val->intval);
+#ifdef CONFIG_LGE_USB_G_ANDROID
+			cancel_delayed_work(&mdwc->resume_work);
+			{
+			int rc = queue_delayed_work(mdwc->dwc3_wq,
+					&mdwc->resume_work, 12);
+			dev_info(mdwc->dev, "%s: Q RW return %d\n", __func__, rc);
+			dbg_event(0xFF, "Q RW (rc)", rc);
+			}
+#else
 			queue_delayed_work(mdwc->dwc3_wq,
 					&mdwc->resume_work, 12);
+#endif
 		}
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
@@ -2593,6 +2636,9 @@ static void dwc3_ext_notify_online(void *ctx, int on)
 		/* force OTG to exit B-peripheral state */
 		mdwc->vbus_active = false;
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	cancel_delayed_work(&mdwc->resume_work);
+#endif
 	schedule_delayed_work(&mdwc->resume_work, 0);
 }
 
@@ -3233,6 +3279,9 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 
 	if (on) {
 		dev_dbg(mdwc->dev, "%s: turn on host\n", __func__);
+#ifdef CONFIG_LGE_USB_G_ANDROID
+		mdwc->hs_phy->flags |= PHY_OTG_MODE;
+#endif
 
 		pm_runtime_get_sync(dwc->dev);
 		dbg_event(0xFF, "StrtHost gync",
@@ -3242,6 +3291,9 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 		ret = regulator_enable(mdwc->vbus_reg);
 		if (ret) {
 			dev_err(dwc->dev, "unable to enable vbus_reg\n");
+#ifdef CONFIG_LGE_USB_G_ANDROID
+			mdwc->hs_phy->flags &= ~PHY_OTG_MODE;
+#endif
 			pm_runtime_put_sync(dwc->dev);
 			dbg_event(0xFF, "vregerr psync",
 				atomic_read(&dwc->dev->power.usage_count));
@@ -3264,6 +3316,9 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 			dev_err(mdwc->dev,
 				"%s: failed to add XHCI pdev ret=%d\n",
 				__func__, ret);
+#ifdef CONFIG_LGE_USB_G_ANDROID
+			mdwc->hs_phy->flags &= ~PHY_OTG_MODE;
+#endif
 #ifndef CONFIG_LGE_USB_TYPE_C
 			regulator_disable(mdwc->vbus_reg);
 #endif
@@ -3291,6 +3346,9 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 			atomic_read(&dwc->dev->power.usage_count));
 	} else {
 		dev_dbg(dwc->dev, "%s: turn off host\n", __func__);
+#ifdef CONFIG_LGE_USB_G_ANDROID
+		mdwc->hs_phy->flags &= ~PHY_OTG_MODE;
+#endif
 
 #ifndef CONFIG_LGE_USB_TYPE_C
 		ret = regulator_disable(mdwc->vbus_reg);
@@ -3601,7 +3659,12 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 	}
 
 	state = usb_otg_state_string(mdwc->otg_state);
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	dev_info(mdwc->dev, "%s state, vbus:%s\n",
+			state, (mdwc->vbus_active)? "online" : "offline" );
+#else
 	dev_dbg(mdwc->dev, "%s state\n", state);
+#endif
 	dbg_event(0xFF, state, 0);
 
 	/* Check OTG state */
@@ -3791,7 +3854,17 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 #ifdef CONFIG_LGE_USB_MAXIM_EVP
 			if (!(dwc->gadget.evp_sts & EVP_STS_SIMPLE))
 #endif
+#ifndef CONFIG_LGE_USB_G_ANDROID
 			pm_runtime_put_sync(mdwc->dev);
+#else
+			ret = pm_runtime_put_sync(mdwc->dev);
+			if ((ret == -EBUSY) && atomic_read(&mdwc->dev->power.child_count)) {
+				pr_info("%s : child count exists, and retry suspend\n",	__func__);
+				pm_runtime_idle(dwc->dev);
+				usleep_range(1000, 1200);
+				pm_runtime_idle(mdwc->dev);
+			}
+#endif
 			dbg_event(0xFF, "BPER psync",
 				atomic_read(&mdwc->dev->power.usage_count));
 			mdwc->chg_type = DWC3_INVALID_CHARGER;
@@ -3943,6 +4016,9 @@ static int dwc3_msm_pm_resume(struct device *dev)
 	atomic_set(&mdwc->pm_suspended, 0);
 
 	/* kick in otg state machine */
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	cancel_delayed_work(&mdwc->resume_work);
+#endif
 	queue_delayed_work(mdwc->dwc3_wq, &mdwc->resume_work, 0);
 
 	return 0;

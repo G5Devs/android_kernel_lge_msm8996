@@ -96,6 +96,16 @@ unsigned int tune2;
 module_param(tune2, uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(tune2, "QUSB PHY TUNE2");
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+static uint32_t qusb2phy_port_tune[4] = {0, 0x43, 0, 0};
+module_param_array(qusb2phy_port_tune, uint, NULL, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(qusb2phy_port_tune, "Override QUSB2PHY_PORT_TUNEs");
+
+static uint32_t qusb2phy_port_tune_otg[4] = {0, 0x43, 0, 0};
+module_param_array(qusb2phy_port_tune_otg, uint, NULL, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(qusb2phy_port_tune_otg, "Override QUSB2PHY_PORT_TUNEs for OTG");
+#endif
+
 struct qusb_phy {
 	struct usb_phy		phy;
 	void __iomem		*base;
@@ -565,6 +575,10 @@ static int qusb_phy_init(struct usb_phy *phy)
 {
 	struct qusb_phy *qphy = container_of(phy, struct qusb_phy, phy);
 	int ret;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	uint32_t *tune;
+	int i;
+#endif
 
 	dev_dbg(phy->dev, "%s\n", __func__);
 
@@ -655,6 +669,32 @@ static int qusb_phy_init(struct usb_phy *phy)
 				qphy->base + QUSB2PHY_PORT_TUNE2);
 	}
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	if (qphy->phy.flags & PHY_OTG_MODE)
+		tune = qusb2phy_port_tune_otg;
+	else
+		tune = qusb2phy_port_tune;
+
+	for (i = 0; i < 4; i++) {
+		if (tune[i]) {
+			pr_debug("%s(): Programming TUNE%d parameter as:%x\n",
+					__func__, i + 1, tune[i]);
+			writel_relaxed(tune[i], qphy->base
+					+ QUSB2PHY_PORT_TUNE1 + (0x04 * i));
+		} else {
+			tune[i] = readl_relaxed(qphy->base
+					+ QUSB2PHY_PORT_TUNE1 + (0x04 * i)) & 0xFF;
+		}
+	}
+	pr_debug("%s:(): qusb2phy_port_tune%s = 0x%02X,0x%02X,0x%02X,0x%02X\n",
+			__func__,
+			(qphy->phy.flags & PHY_OTG_MODE) ? "_otg" : "",
+			tune[0],
+			tune[1],
+			tune[2],
+			tune[3]);
+#endif
+
 	/* ensure above writes are completed before re-enabling PHY */
 	wmb();
 
@@ -712,6 +752,10 @@ static int qusb_phy_set_suspend(struct usb_phy *phy, int suspend)
 {
 	struct qusb_phy *qphy = container_of(phy, struct qusb_phy, phy);
 	u32 linestate = 0, intr_mask = 0;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	uint32_t *tune;
+	int i;
+#endif
 
 	if (qphy->suspended && suspend) {
 		dev_dbg(phy->dev, "%s: USB PHY is already suspended\n",
@@ -783,6 +827,33 @@ static int qusb_phy_set_suspend(struct usb_phy *phy, int suspend)
 			qusb_phy_enable_power(qphy, true, true);
 			qusb_phy_enable_clocks(qphy, true);
 		}
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+		if (qphy->phy.flags & PHY_OTG_MODE)
+			tune = qusb2phy_port_tune_otg;
+		else
+			tune = qusb2phy_port_tune;
+
+		for (i = 0; i < 4; i++) {
+			if (tune[i]) {
+				pr_debug("%s(): Programming TUNE%d parameter as:%x\n",
+						__func__, i + 1, tune[i]);
+				writel_relaxed(tune[i], qphy->base
+						+ QUSB2PHY_PORT_TUNE1 + (0x04 * i));
+			} else {
+				tune[i] = readl_relaxed(qphy->base
+						+ QUSB2PHY_PORT_TUNE1 + (0x04 * i)) & 0xFF;
+			}
+		}
+		pr_debug("%s:(): qusb2phy_port_tune%s = 0x%02X,0x%02X,0x%02X,0x%02X\n",
+				__func__,
+				(qphy->phy.flags & PHY_OTG_MODE) ? "_otg" : "",
+				tune[0],
+				tune[1],
+				tune[2],
+				tune[3]);
+#endif
+
 		qphy->suspended = false;
 	}
 

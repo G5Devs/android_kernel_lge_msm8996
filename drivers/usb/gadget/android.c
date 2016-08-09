@@ -39,7 +39,7 @@
 #include "u_fs.h"
 #include "u_ecm.h"
 #include "u_ncm.h"
-#ifdef CONFIG_SND_RAWMIDI
+#if defined(CONFIG_SND_RAWMIDI) || defined(CONFIG_LGE_USB_G_ANDROID)
 #include "f_midi.c"
 #endif
 #include "f_diag.c"
@@ -57,6 +57,9 @@
 #include "f_mtp.c"
 #include "f_accessory.c"
 #include "f_charger.c"
+#ifdef CONFIG_LGE_USB_G_ANDROID
+#include "f_charge_only.c"
+#endif
 #define USB_ETH_RNDIS y
 #include "f_rndis.c"
 #include "rndis.c"
@@ -86,6 +89,14 @@ static const char longname[] = "Gadget Android";
 /* Default vendor and product IDs, overridden by userspace */
 #define VENDOR_ID		0x18D1
 #define PRODUCT_ID		0x0001
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+/* f_midi configuration */
+#define MIDI_INPUT_PORTS    1
+#define MIDI_OUTPUT_PORTS   1
+#define MIDI_BUFFER_SIZE    1024
+#define MIDI_QUEUE_LENGTH   32
+#endif
 
 #define ANDROID_DEVICE_NODE_NAME_LENGTH 11
 /* f_midi configuration */
@@ -219,6 +230,10 @@ struct android_dev {
 
 	/* A list node inside the android_dev_list */
 	struct list_head list_item;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	bool check_charge_only;
+	bool ffs_binding_fail;
+#endif
 };
 
 struct android_configuration {
@@ -253,11 +268,19 @@ static char manufacturer_string[256];
 static char product_string[256];
 static char serial_string[256];
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+#define CHARGE_ONLY_STRING_IDX		3
+static char charge_only_string[256];
+#endif
+
 /* String Table */
 static struct usb_string strings_dev[] = {
 	[STRING_MANUFACTURER_IDX].s = manufacturer_string,
 	[STRING_PRODUCT_IDX].s = product_string,
 	[STRING_SERIAL_IDX].s = serial_string,
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	[CHARGE_ONLY_STRING_IDX].s = charge_only_string,
+#endif
 	{  }			/* end of list */
 };
 
@@ -527,6 +550,9 @@ static int android_enable(struct android_dev *dev)
 	if (WARN_ON(!dev->disable_depth))
 		return err;
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	pr_info("%s: checked disable_depth(%d)\n", __func__, dev->disable_depth);
+#endif
 	if (--dev->disable_depth == 0) {
 
 		list_for_each_entry(conf, &dev->configs, list_item) {
@@ -536,6 +562,9 @@ static int android_enable(struct android_dev *dev)
 				pr_err("%s: usb_add_config failed : err: %d\n",
 						__func__, err);
 				dev->disable_depth++;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+				dev->ffs_binding_fail = true;
+#endif
 				return err;
 			}
 		}
@@ -571,6 +600,9 @@ static void android_disable(struct android_dev *dev)
 	struct usb_composite_dev *cdev = dev->cdev;
 	struct android_configuration *conf;
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	pr_info("%s: checked disable_depth(%d)\n", __func__, dev->disable_depth);
+#endif
 	if (dev->disable_depth++ == 0) {
 #ifdef CONFIG_LGE_USB_MAXIM_EVP
 		if (cdev->gadget->evp_sts & (EVP_STS_EVP | EVP_STS_G_EN)) {
@@ -646,6 +678,10 @@ static void ffs_function_enable(struct android_usb_function *f)
 
 	config->enabled = true;
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	pr_info("%s: config->opened(%d)\n", __func__, config->opened);
+#endif
+
 	/* Disable the gadget until the function is ready */
 	if (!config->opened)
 		android_disable(dev);
@@ -657,6 +693,10 @@ static void ffs_function_disable(struct android_usb_function *f)
 	struct functionfs_config *config = f->config;
 
 	config->enabled = false;
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	pr_info("%s: config->opened(%d)\n", __func__, config->opened);
+#endif
 
 	/* Balance the disable that was called in closed_callback */
 	if (!config->opened)
@@ -678,8 +718,10 @@ static int ffs_function_bind_config(struct android_usb_function *f,
 		pr_err("%s(): usb_add_function() fails (err:%d) for ffs\n",
 							__func__, ret);
 
+#ifndef CONFIG_LGE_USB_G_ANDROID
 		usb_put_function(config->func);
 		config->func = NULL;
+#endif
 	}
 
 	return ret;
@@ -750,11 +792,26 @@ static int functionfs_ready_callback(struct ffs_data *ffs)
 	if (dev)
 		mutex_lock(&dev->mutex);
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	pr_info("%s: config->enabled(%d), dev(%p)\n", __func__, config->enabled, dev);
+#endif
+
 	config->data = ffs;
 	config->opened = true;
 
 	if (config->enabled && dev)
 		android_enable(dev);
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	if (dev) {
+		if (dev->ffs_binding_fail) {
+			dev->ffs_binding_fail = false;
+			dev->connected = 1;
+			android_enable(dev);
+			dev->enabled = true;
+		}
+	}
+#endif
 
 	if (dev)
 		mutex_unlock(&dev->mutex);
@@ -769,6 +826,10 @@ static void functionfs_closed_callback(struct ffs_data *ffs)
 
 	if (dev)
 		mutex_lock(&dev->mutex);
+
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	pr_info("%s: config->enabled(%d), dev(%p)\n", __func__, config->enabled, dev);
+#endif
 
 	if (config->enabled && dev)
 		android_disable(dev);
@@ -834,7 +895,11 @@ acm_function_bind_config(struct android_usb_function *f,
 	static int acm_initialized, ports;
 	struct acm_function_config *config = f->config;
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	if (acm_initialized && ports)
+#else
 	if (acm_initialized)
+#endif
 		goto bind_config;
 
 	acm_initialized = 1;
@@ -941,6 +1006,9 @@ static struct android_usb_function acm_function = {
 /*rmnet transport string format(per port):"ctrl0,data0,ctrl1,data1..." */
 #define MAX_XPORT_STR_LEN 50
 static char rmnet_transports[MAX_XPORT_STR_LEN];
+#ifdef CONFIG_LGE_USB_G_ANDROID
+static char* rmnet_trans = "qti,bam2bam_ipa";
+#endif
 
 /*rmnet transport name string - "rmnet_hsic[,rmnet_hsusb]" */
 static char rmnet_xport_names[MAX_XPORT_STR_LEN];
@@ -979,6 +1047,11 @@ static int rmnet_function_bind_config(struct android_usb_function *f,
 
 	if (!rmnet_initialized) {
 		rmnet_initialized = 1;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+		if(strcmp(rmnet_transports, rmnet_trans))
+			strlcpy(buf, rmnet_trans, sizeof(buf));
+		else
+#endif
 		strlcpy(buf, rmnet_transports, sizeof(buf));
 		b = strim(buf);
 
@@ -2598,6 +2671,10 @@ static struct android_usb_function ecm_function = {
 	.attributes	= ecm_function_attributes,
 };
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+static const char lge_vendor_name[] = "LGE";
+static const char lge_product_name[] = "Android Platform";
+#endif
 struct mass_storage_function_config {
 	struct usb_function *f_ms;
 	struct usb_function_instance *f_ms_inst;
@@ -2780,6 +2857,32 @@ static struct android_usb_function mass_storage_function = {
 	.attributes	= mass_storage_function_attributes,
 };
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+/* charge only mode */
+static int charge_only_function_init(struct android_usb_function *f,
+		struct usb_composite_dev *cdev)
+{
+	return charge_only_setup();
+}
+
+static void charge_only_function_cleanup(struct android_usb_function *f)
+{
+	charge_only_cleanup();
+}
+
+static int charge_only_function_bind_config(struct android_usb_function *f,
+		struct usb_configuration *c)
+{
+	return charge_only_bind_config(c);
+}
+
+static struct android_usb_function charge_only_function = {
+	.name		= "charge_only",
+	.init		= charge_only_function_init,
+	.cleanup	= charge_only_function_cleanup,
+	.bind_config	= charge_only_function_bind_config,
+};
+#endif /* CONFIG_LGE_USB_G_ANDROID */
 
 static int accessory_function_init(struct android_usb_function *f,
 					struct usb_composite_dev *cdev)
@@ -2867,7 +2970,7 @@ static struct android_usb_function audio_source_function = {
 	.bind_config	= audio_source_function_bind_config,
 };
 
-#ifdef CONFIG_SND_RAWMIDI
+#if defined(CONFIG_SND_RAWMIDI) || defined(CONFIG_LGE_USB_G_ANDROID)
 static int midi_function_init(struct android_usb_function *f,
 					struct usb_composite_dev *cdev)
 {
@@ -3015,10 +3118,13 @@ static struct android_usb_function *supported_functions[] = {
 	&ecm_function,
 	&ncm_function,
 	&mass_storage_function,
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	&charge_only_function,
+#endif
 	&accessory_function,
 	&audio_source_function,
 	&charger_function,
-#ifdef CONFIG_SND_RAWMIDI
+#if defined(CONFIG_SND_RAWMIDI) || defined(CONFIG_LGE_USB_G_ANDROID)
 	&midi_function,
 #endif
 #ifdef CONFIG_LGE_USB_MAXIM_EVP
@@ -3342,6 +3448,10 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 		return -EBUSY;
 	}
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	dev_info(dev->dev, "LGE-USB request function list: %s\n", buff);
+#endif
+
 	/* Clear previous enabled list */
 	list_for_each_entry(conf, &dev->configs, list_item) {
 		while (conf->enabled_functions.next !=
@@ -3358,6 +3468,11 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 
 	strlcpy(buf, buff, sizeof(buf));
 	b = strim(buf);
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	dev->check_charge_only = false;
+	if (!strcmp(b, "charge_only"))
+		dev->check_charge_only = true;
+#endif
 
 	dev->cdev->gadget->streaming_enabled = false;
 	while (b) {
@@ -3447,6 +3562,9 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 		return -ENODEV;
 
 	mutex_lock(&dev->mutex);
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	dev_info(dev->dev, "gadget enable(%s)\n", buff);
+#endif
 
 	sscanf(buff, "%d", &enabled);
 	if (enabled && !dev->enabled) {
@@ -3461,6 +3579,18 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 		cdev->desc.bDeviceClass = device_desc.bDeviceClass;
 		cdev->desc.bDeviceSubClass = device_desc.bDeviceSubClass;
 		cdev->desc.bDeviceProtocol = device_desc.bDeviceProtocol;
+#ifdef CONFIG_LGE_USB_G_ANDROID
+		if (dev->check_charge_only) {
+			cdev->desc.iSerialNumber = 0;
+			cdev->desc.iProduct =
+				strings_dev[CHARGE_ONLY_STRING_IDX].id;
+		} else {
+			cdev->desc.iSerialNumber =
+				strings_dev[STRING_SERIAL_IDX].id;
+			cdev->desc.iProduct =
+				strings_dev[STRING_PRODUCT_IDX].id;
+		}
+#endif
 
 		/* Audio dock accessory is unable to enumerate device if
 		 * pull-up is enabled immediately. The enumeration is
@@ -3705,7 +3835,10 @@ static int android_bind(struct usb_composite_dev *cdev)
 	struct android_dev *dev;
 	struct usb_gadget	*gadget = cdev->gadget;
 	int			id, ret;
-
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	char lge_product[256];
+	char lge_manufacturer[256];
+#endif
 	/* Bind to the last android_dev that was probed */
 	dev = list_entry(android_dev_list.prev, struct android_dev, list_item);
 
@@ -3742,10 +3875,29 @@ static int android_bind(struct usb_composite_dev *cdev)
 	strings_dev[STRING_PRODUCT_IDX].id = id;
 	device_desc.iProduct = id;
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	/* Default string as LGE products */
+	ret = lgeusb_get_manufacturer_name(lge_manufacturer);
+	if (!ret)
+		strlcpy(manufacturer_string, lge_manufacturer,
+				sizeof(manufacturer_string) - 1);
+	else
+		strlcpy(manufacturer_string, "LG Electronics Inc.",
+				sizeof(manufacturer_string) - 1);
+
+	ret = lgeusb_get_product_name(lge_product);
+	if (!ret)
+		strlcpy(product_string, lge_product,
+				sizeof(product_string) - 1);
+	else
+	strlcpy(product_string, "LGE Android Phone",
+				sizeof(product_string) - 1);
+#else
 	/* Default strings - should be updated by userspace */
 	strlcpy(manufacturer_string, "Android",
 		sizeof(manufacturer_string) - 1);
 	strlcpy(product_string, "Android", sizeof(product_string) - 1);
+#endif
 	strlcpy(serial_string, "0123456789ABCDEF", sizeof(serial_string) - 1);
 
 	id = usb_string_id(cdev);
@@ -3756,6 +3908,14 @@ static int android_bind(struct usb_composite_dev *cdev)
 
 	dev->cdev = cdev;
 
+#ifdef CONFIG_LGE_USB_G_ANDROID
+	id = usb_string_id(cdev);
+	if (id < 0)
+		return id;
+	strings_dev[CHARGE_ONLY_STRING_IDX].id = id;
+	strlcpy(charge_only_string, "USB Charge Only Interface",
+			sizeof(charge_only_string) - 1);
+#endif
 	return 0;
 }
 
