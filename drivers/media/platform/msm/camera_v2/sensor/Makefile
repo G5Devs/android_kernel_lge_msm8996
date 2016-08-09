@@ -8,3 +8,5 @@ ccflags-y += -Idrivers/media/platform/msm/camera_v2/sensor/tcs
 obj-$(CONFIG_MSMB_CAMERA) += cci/ io/ csiphy/ csid/ actuator/ eeprom/ ois/ flash/
 obj-$(CONFIG_MSM_CAMERA_SENSOR) += msm_sensor_init.o msm_sensor_driver.o msm_sensor.o
 obj-$(CONFIG_LG_TCS) += tcs/
+
+obj-$(CONFIG_IMX234) += imx234.o
