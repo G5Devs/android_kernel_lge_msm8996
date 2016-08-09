@@ -4,6 +4,17 @@ config MACH_LGE
 	  Support for machine LGE.
 
 
+menu "LGE Board Selection"
+
+config MACH_MSM8996_H1
+	bool "MSM8996 H1"
+	depends on ARCH_MSM8996
+	select MACH_LGE
+	select LGE_DDR_SECTION_SIZE_CHANGE
+	help
+	  Support for the Qualcomm MSM8996 H1 device.
+endmenu
+
 menu "LGE Specific Patches"
 
 config LGE_PM_DEBUG
