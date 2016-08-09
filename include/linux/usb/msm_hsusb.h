@@ -600,6 +600,16 @@ struct msm_usb_host_platform_data {
 	int pm_qos_latency;
 };
 
+/**
+ * struct msm_hsic_peripheral_platform_data: HSIC peripheral
+ * platform data.
+ * @core_clk_always_on_workaround: Don't disable core_clk when
+ *                                 HSIC enters LPM.
+ */
+struct msm_hsic_peripheral_platform_data {
+	bool core_clk_always_on_workaround;
+};
+
 #ifdef CONFIG_USB_BAM
 void msm_bam_set_usb_host_dev(struct device *dev);
 void msm_bam_set_hsic_host_dev(struct device *dev);
@@ -657,6 +667,7 @@ int msm_dwc3_reset_dbm_ep(struct usb_ep *ep);
 
 void msm_dwc3_restart_usb_session(struct usb_gadget *gadget);
 
+int msm_register_usb_ext_notification(struct usb_ext_notification *info);
 #else
 static inline int msm_data_fifo_config(struct usb_ep *ep, phys_addr_t addr,
 	u32 size, u8 dst_pipe_idx)
@@ -682,6 +693,12 @@ static inline void dwc3_tx_fifo_resize_request(
 static inline void msm_dwc3_restart_usb_session(struct usb_gadget *gadget)
 {
 	return;
+}
+
+static inline int msm_register_usb_ext_notification(
+					struct usb_ext_notification *info)
+{
+	return -ENODEV;
 }
 
 static inline bool msm_dwc3_reset_ep_after_lpm(struct usb_gadget *gadget)
