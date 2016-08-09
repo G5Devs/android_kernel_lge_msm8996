@@ -907,7 +907,11 @@ static int qpnp_flash_led_module_disable(struct qpnp_flash_led *led,
 {
 	union power_supply_propval psy_prop;
 	int rc;
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	u8 val, tmp, pmi8996_ver_val;
+#else
 	u8 val, tmp;
+#endif
 
 	rc = spmi_ext_register_readl(led->spmi_dev->ctrl,
 				led->spmi_dev->sid,
@@ -941,6 +945,31 @@ static int qpnp_flash_led_module_disable(struct qpnp_flash_led *led,
 			}
 		}
 
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	//PMI8996 register : 0x102, PMI8996 v1.0 : 0x00, PMI8996 v1.1 : 0x01
+	rc = spmi_ext_register_readl(led->spmi_dev->ctrl,
+		0x2,
+		0x102,
+		&pmi8996_ver_val, 1);
+	if (rc) {
+		dev_err(&led->spmi_dev->dev,
+		"Unable to read from addr : %x, rc : %d\n",pmi8996_ver_val, rc);
+		return -EINVAL;
+	}
+	if(pmi8996_ver_val == 0x00) {
+		if (led->battery_psy) {
+			psy_prop.intval = false;
+			rc = led->battery_psy->set_property(led->battery_psy,
+			POWER_SUPPLY_PROP_FLASH_TRIGGER,
+			&psy_prop);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+				"Failed to enble charger i/p current limit\n");
+				return -EINVAL;
+			}
+		}
+	}
+#endif
 		rc = qpnp_led_masked_write(led->spmi_dev,
 				FLASH_MODULE_ENABLE_CTRL(led->base),
 				FLASH_MODULE_ENABLE_MASK,
@@ -1158,7 +1187,11 @@ static void qpnp_flash_led_work(struct work_struct *work)
 	int max_curr_avail_ma = 0;
 	int total_curr_ma = 0;
 	int i;
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	u8 val, pmi8996_ver_val;
+#else
 	u8 val;
+#endif
 
 	mutex_lock(&led->flash_led_lock);
 
@@ -1530,7 +1563,28 @@ static void qpnp_flash_led_work(struct work_struct *work)
 			usleep_range(FLASH_RAMP_UP_DELAY_US_MIN,
 						FLASH_RAMP_UP_DELAY_US_MAX);
 		}
-
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	//PMI8996 register : 0x102, PMI8996 v1.0 : 0x00, PMI8996 v1.1 : 0x01
+	rc = spmi_ext_register_readl(led->spmi_dev->ctrl,
+		0x2,
+		0x102,
+		&pmi8996_ver_val, 1);
+	if (rc) {
+		dev_err(&led->spmi_dev->dev,
+		"Unable to read from addr : %x, rc : %d\n",pmi8996_ver_val, rc);
+		goto exit_flash_led_work;
+	}
+	if(pmi8996_ver_val == 0x00) {
+		rc = led->battery_psy->set_property(led->battery_psy,
+			POWER_SUPPLY_PROP_FLASH_TRIGGER,
+			&psy_prop);
+		if (rc) {
+		dev_err(&led->spmi_dev->dev,
+			"Failed to disable charger input current limit\n");
+		goto exit_flash_led_work;
+		}
+	}
+#endif
 		if (led->pdata->hdrm_sns_ch0_en ||
 					led->pdata->hdrm_sns_ch1_en) {
 			if (flash_node->id == FLASH_LED_SWITCH) {
@@ -2227,9 +2281,13 @@ static int qpnp_flash_led_parse_common_dt(
 
 	led->pdata->hdrm_sns_ch1_en = of_property_read_bool(node,
 						"qcom,headroom-sense-ch1-enabled");
-
+#ifdef CONFIG_LGE_CAMERA_DRIVER
+	//Disable Current change by power detect enable (G4 deliver)
+	led->pdata->power_detect_en = false;
+#else
 	led->pdata->power_detect_en = of_property_read_bool(node,
 						"qcom,power-detect-enabled");
+#endif
 
 	led->pdata->mask3_en = of_property_read_bool(node,
 						"qcom,otst2-module-enabled");
